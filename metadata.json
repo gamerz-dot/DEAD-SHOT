@@ -1,0 +1,6 @@
+{
+  "name": "Dead shot",
+  "description": "First-person tactical action game lobby and simulation with realistic weapons, dynamic weather, Pakistan custom maps, Google/Guest authentication, and destructible target training.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
