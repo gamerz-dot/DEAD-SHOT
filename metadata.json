@@ -1,6 +1,6 @@
 {
-  "name": "Dead shot",
-  "description": "First-person tactical action game lobby and simulation with realistic weapons, dynamic weather, Pakistan custom maps, Google/Guest authentication, and destructible target training.",
+  "name": "Free Fire - DeadShot Arena",
+  "description": "Epic Garena-style tactical battle royale. Deploy Gloo Walls, consume level-4 mushrooms, call high-tier supply airdrops, use character skills like Chrono and DJ Alok, and conquer the Arena!",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

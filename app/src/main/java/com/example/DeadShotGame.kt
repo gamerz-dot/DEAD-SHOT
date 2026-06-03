@@ -29,6 +29,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.*
 import androidx.compose.ui.graphics.*
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipPath
@@ -37,6 +38,8 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -66,6 +69,7 @@ object DeadShotTheme {
 @Composable
 fun DeadShotGameApp(viewModel: DeadShotViewModel) {
     val currentScreen by viewModel.currentScreen.collectAsState()
+    val isParachuteGlidePhase by viewModel.isParachuteGlidePhase.collectAsState()
     val context = LocalContext.current
 
     // Force strict 16:9 landscape aspect ratio box in the center, 
@@ -99,15 +103,375 @@ fun DeadShotGameApp(viewModel: DeadShotViewModel) {
                 .border(2.dp, Color(0xFF232730))
                 .shadow(24.dp)
         ) {
-            Crossfade(
-                targetState = currentScreen,
-                animationSpec = tween(700, easing = LinearOutSlowInEasing)
-            ) { screen ->
-                when (screen) {
-                    ActiveScreen.SPLASH -> DeadShotSplashScreen()
-                    ActiveScreen.LOGIN -> DeadShotLoginScreen(viewModel)
-                    ActiveScreen.LOBBY -> DeadShotLobbyScreen(viewModel)
-                    ActiveScreen.ARENA -> DeadShotArenaScreen(viewModel)
+            if (isParachuteGlidePhase) {
+                DeadShotParachuteScreen(viewModel = viewModel)
+            } else {
+                Crossfade(
+                    targetState = currentScreen,
+                    animationSpec = tween(700, easing = LinearOutSlowInEasing)
+                ) { screen ->
+                    when (screen) {
+                        ActiveScreen.SPLASH -> DeadShotSplashScreen()
+                        ActiveScreen.LOGIN -> DeadShotLoginScreen(viewModel)
+                        ActiveScreen.LOBBY -> DeadShotLobbyScreen(viewModel)
+                        ActiveScreen.ARENA -> DeadShotArenaScreen(viewModel)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DeadShotParachuteScreen(viewModel: DeadShotViewModel) {
+    val dropHeight by viewModel.parachuteDropHeight.collectAsState()
+    val isParachuteOpened by viewModel.isParachuteOpened.collectAsState()
+    val selectedMap by viewModel.selectedMap.collectAsState()
+    val selectedWeather by viewModel.selectedWeather.collectAsState()
+    val currentOutfit by viewModel.equippedOutfit.collectAsState()
+
+    val infiniteTransition = rememberInfiniteTransition()
+    
+    val windOscillation by infiniteTransition.animateFloat(
+        initialValue = -3f,
+        targetValue = 3f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(200, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        )
+    )
+
+    val lightningAlpha by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = keyframes {
+                durationMillis = 3000
+                0.0f at 0
+                0.0f at 2400
+                0.8f at 2450
+                0.0f at 2500
+                1.0f at 2550
+                0.0f at 2650
+            },
+            repeatMode = RepeatMode.Restart
+        )
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF07080A))
+    ) {
+        // SCENIC LANDSCAPE CANVAS DRAWINGS
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+
+            // 1. Draw weather sky backgrounds
+            when (selectedWeather) {
+                WeatherType.SUNNY -> {
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(Color(0xFF1E3C72), Color(0xFF2A5298))
+                        )
+                    )
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(Color(0xFFFFD54F).copy(alpha = 0.3f), Color.Transparent),
+                            center = Offset(w * 0.8f, h * 0.2f),
+                            radius = 180f
+                        ),
+                        radius = 180f,
+                        center = Offset(w * 0.8f, h * 0.2f)
+                    )
+                }
+                WeatherType.MONSOON -> {
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(Color(0xFF1F2533), Color(0xFF0D1017))
+                        )
+                    )
+                    if (lightningAlpha > 0.1f) {
+                        val path = Path().apply {
+                            moveTo(w * 0.5f, 0f)
+                            lineTo(w * 0.45f, h * 0.25f)
+                            lineTo(w * 0.52f, h * 0.25f)
+                            lineTo(w * 0.48f, h * 0.5f)
+                            lineTo(w * 0.54f, h * 0.42f)
+                            lineTo(w * 0.5f, h * 0.7f)
+                        }
+                        drawPath(
+                            path = path,
+                            color = Color(0xFFE2F0FF).copy(alpha = lightningAlpha),
+                            style = Stroke(width = 4f)
+                        )
+                    }
+                }
+                WeatherType.SANDSTORM -> {
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(Color(0xFF9E7854), Color(0xFF422F1D))
+                        )
+                    )
+                }
+            }
+
+            // 2. Draw ground surface details (Perspective depth) that expands as altitude decreases
+            val scalePct = (200f - dropHeight) / 200f
+            val perspectiveOffset = h * 0.6f + (h * 0.2f * scalePct)
+            
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colors = listOf(Color(0xFF1C1D24), Color(0xFF0A0B0F))
+                ),
+                topLeft = Offset(0f, perspectiveOffset),
+                size = Size(w, h - perspectiveOffset)
+            )
+
+            // Draw Pakistani thematic structures
+            when (selectedMap) {
+                PakistanMap.KARACHI -> {
+                    drawRect(
+                        color = Color(0xFF14243B),
+                        topLeft = Offset(0f, perspectiveOffset + 15f),
+                        size = Size(w * 0.4f, h)
+                    )
+                    val containerSize = 10f + (35f * scalePct)
+                    for (i in 0..12) {
+                        val cX = w * 0.2f + (i * w * 0.05f)
+                        val cY = perspectiveOffset + 5f + (i * 4f)
+                        drawRect(
+                            color = if (i % 2 == 0) Color(0xFFC0392B) else Color(0xFF2980B9),
+                            topLeft = Offset(cX, cY),
+                            size = Size(containerSize * 1.5f, containerSize)
+                        )
+                    }
+                    val flagX = w * 0.85f
+                    val flagY = perspectiveOffset - 25f
+                    drawRect(color = Color(0xFF01411C), topLeft = Offset(flagX, flagY), size = Size(24f, 15f))
+                    drawRect(color = Color.White, topLeft = Offset(flagX, flagY), size = Size(6f, 15f))
+                    drawCircle(color = Color.White, radius = 2.5f, center = Offset(flagX + 15f, flagY + 7.5f))
+                }
+                PakistanMap.LAHORE -> {
+                    val fortressW = w * 0.6f
+                    val fortressH = 15f + (80f * scalePct)
+                    val fortressX = w * 0.2f
+                    drawRoundRect(
+                        color = Color(0xFF8E44AD),
+                        topLeft = Offset(fortressX, perspectiveOffset - fortressH + 5f),
+                        size = Size(fortressW, fortressH),
+                        cornerRadius = CornerRadius(12f, 12f)
+                    )
+                    val domeR = 12f + (35f * scalePct)
+                    drawCircle(
+                        color = Color(0xFFD4AC0D),
+                        radius = domeR,
+                        center = Offset(w * 0.4f, perspectiveOffset - fortressH)
+                    )
+                    drawCircle(
+                        color = Color(0xFFD4AC0D),
+                        radius = domeR,
+                        center = Offset(w * 0.6f, perspectiveOffset - fortressH)
+                    )
+                }
+                PakistanMap.ISLAMABAD -> {
+                    val hillRand = Random(777)
+                    for (i in 0..6) {
+                        val hillX = i * w * 0.16f
+                        val hillH = 20f + (100f * scalePct)
+                        val path = Path().apply {
+                            moveTo(hillX, perspectiveOffset + 10f)
+                            lineTo(hillX + 50f, perspectiveOffset - hillH)
+                            lineTo(hillX + 100f, perspectiveOffset + 10f)
+                            close()
+                        }
+                        drawPath(path, color = Color(0xFF1E824C))
+                    }
+                }
+            }
+
+            // 3. Render 3D Flight Drop Jet (altitude > 50m)
+            if (dropHeight > 50f) {
+                val planeProgress = (200f - dropHeight) / 150f
+                val planeX = -100f + (w + 200f) * planeProgress
+                val planeY = h * 0.25f + windOscillation
+
+                val planePath = Path().apply {
+                    moveTo(planeX, planeY)
+                    lineTo(planeX - 60f, planeY - 20f)
+                    lineTo(planeX - 90f, planeY - 15f)
+                    lineTo(planeX - 70f, planeY)
+                    lineTo(planeX - 120f, planeY + 5f)
+                    lineTo(planeX - 40f, planeY + 12f)
+                    close()
+                }
+                drawPath(planePath, brush = Brush.linearGradient(colors = listOf(Color(0xFF2C3E50), Color(0xFF1A252F))))
+                
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(Color(0xFFFFFF00), Color(0xFFFF5722), Color.Transparent),
+                        center = Offset(planeX - 120f, planeY + 5f),
+                        radius = 20f
+                    ),
+                    radius = 20f,
+                    center = Offset(planeX - 120f, planeY + 5f)
+                )
+            } else {
+                // 4. Parachute Glider deploy (< 50m)
+                val canopyX = w * 0.5f + windOscillation
+                val canopyY = h * 0.18f
+                val canopyW = 100f + (60f * scalePct)
+                val canopyH = 30f + (15f * scalePct)
+
+                val pilotX = w * 0.5f + windOscillation
+                val pilotY = h * 0.55f
+
+                drawLine(color = Color.White.copy(alpha = 0.5f), start = Offset(canopyX - canopyW/2, canopyY + canopyH/2), end = Offset(pilotX, pilotY), strokeWidth = 1.5f)
+                drawLine(color = Color.White.copy(alpha = 0.5f), start = Offset(canopyX - canopyW/4, canopyY + canopyH), end = Offset(pilotX, pilotY), strokeWidth = 1.5f)
+                drawLine(color = Color.White.copy(alpha = 0.5f), start = Offset(canopyX + canopyW/4, canopyY + canopyH), end = Offset(pilotX, pilotY), strokeWidth = 1.5f)
+                drawLine(color = Color.White.copy(alpha = 0.5f), start = Offset(canopyX + canopyW/2, canopyY + canopyH/2), end = Offset(pilotX, pilotY), strokeWidth = 1.5f)
+
+                drawArc(
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(Color.Black, Color.Red, Color.Black, Color.Red, Color.Black)
+                    ),
+                    startAngle = 180f,
+                    sweepAngle = 180f,
+                    useCenter = true,
+                    topLeft = Offset(canopyX - canopyW / 2, canopyY),
+                    size = Size(canopyW, canopyH * 2)
+                )
+
+                val pilotColor = if (currentOutfit == "Angel Suit Outfit") Color(0xFFFFD700) else Color(0xFF39FF14)
+                drawCircle(color = pilotColor, radius = 9f, center = Offset(pilotX, pilotY))
+                
+                drawLine(color = pilotColor, start = Offset(pilotX, pilotY + 9f), end = Offset(pilotX, pilotY + 30f), strokeWidth = 3f)
+                
+                if (currentOutfit == "Angel Suit Outfit") {
+                    val wingPath = Path().apply {
+                        moveTo(pilotX, pilotY + 12f)
+                        lineTo(pilotX - 35f, pilotY - 5f)
+                        lineTo(pilotX - 10f, pilotY + 20f)
+                        close()
+                        moveTo(pilotX, pilotY + 12f)
+                        lineTo(pilotX + 35f, pilotY - 5f)
+                        lineTo(pilotX + 10f, pilotY + 20f)
+                        close()
+                    }
+                    drawPath(wingPath, brush = Brush.linearGradient(colors = listOf(Color(0xFFFFF9C4), Color(0xFFFFD700))))
+                }
+            }
+
+            val windRand = Random(555)
+            for (i in 0..10) {
+                val windX = windRand.nextFloat() * w
+                val windStartY = windRand.nextFloat() * h
+                drawLine(
+                    color = Color.White.copy(alpha = 0.15f),
+                    start = Offset(windX, windStartY),
+                    end = Offset(windX, (windStartY - 60f).coerceAtLeast(0f)),
+                    strokeWidth = 2f
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "PAKISTAN TACTICAL DROP: ${selectedMap.label.uppercase()}",
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Black,
+                    fontFamily = FontFamily.Monospace,
+                    letterSpacing = 2.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "ALTITUDE: ",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = "${"%.0f".format(dropHeight)}M",
+                        color = if (dropHeight <= 50f) DeadShotTheme.TacticalRed else DeadShotTheme.LaserGreen,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                
+                Box(
+                    modifier = Modifier
+                        .width(220.dp)
+                        .height(6.dp)
+                        .background(Color.White.copy(alpha = 0.15f), RoundedCornerShape(3.dp))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .fillMaxWidth(dropHeight / 200f)
+                            .background(
+                                color = if (dropHeight <= 50f) DeadShotTheme.TacticalRed else DeadShotTheme.LaserGreen,
+                                shape = RoundedCornerShape(3.dp)
+                            )
+                    )
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(8.dp))
+                    .padding(8.dp)
+            ) {
+                Text("TACTICAL TELEMETRY", color = DeadShotTheme.LaserGreen, fontSize = 8.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("MAP COORDS: Saddar Port Docks 25°N-67°E", color = Color.White.copy(alpha = 0.7f), fontSize = 8.sp, fontFamily = FontFamily.Monospace)
+                Text("EST. WINDSPEED: 42 KNOTS SE", color = Color.White.copy(alpha = 0.7f), fontSize = 8.sp, fontFamily = FontFamily.Monospace)
+                Text("EQUIPPED SUIT: $currentOutfit", color = DeadShotTheme.GoldAccent, fontSize = 8.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = if (dropHeight > 50f) "FLIGHT DROPPING..." else "PARACHUTE DECELE GLIDING!",
+                    color = if (dropHeight > 50f) Color.Yellow else DeadShotTheme.LaserGreen,
+                    fontSize = 7.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Button(
+                onClick = {
+                    viewModel.skipParachuteGlide {
+                        viewModel.setupArenaTargets()
+                        viewModel.navigateTo(ActiveScreen.ARENA)
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = DeadShotTheme.TacticalRed),
+                shape = RoundedCornerShape(6.dp),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .height(42.dp)
+                    .shadow(elevation = 12.dp, spotColor = DeadShotTheme.TacticalRed, ambientColor = DeadShotTheme.TacticalRed)
+                    .testTag("btn_skip_glider")
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("FORCE JUMP LANDING", fontSize = 11.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("[SKIP]", fontSize = 8.sp, color = Color.White.copy(alpha = 0.6f), fontFamily = FontFamily.Monospace)
                 }
             }
         }
@@ -292,6 +656,8 @@ fun DeadShotLoginScreen(viewModel: DeadShotViewModel) {
     val googleAccounts by viewModel.googleAccounts.collectAsState()
 
     val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     val coroutineScope = rememberCoroutineScope()
 
     // Smooth entry animations for the main visual card
@@ -754,6 +1120,12 @@ fun DeadShotLoginScreen(viewModel: DeadShotViewModel) {
                         value = textInput,
                         onValueChange = { textInput = it },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = {
+                            keyboardController?.hide()
+                            focusManager.clearFocus()
+                            viewModel.submitProfileName(textInput.text)
+                        }),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = DeadShotTheme.NeonBlue,
                             unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
@@ -769,7 +1141,11 @@ fun DeadShotLoginScreen(viewModel: DeadShotViewModel) {
             },
             confirmButton = {
                 Button(
-                    onClick = { viewModel.submitProfileName(textInput.text) },
+                    onClick = {
+                        keyboardController?.hide()
+                        focusManager.clearFocus()
+                        viewModel.submitProfileName(textInput.text)
+                    },
                     colors = ButtonDefaults.buttonColors(containerColor = DeadShotTheme.NeonBlue),
                     shape = RoundedCornerShape(4.dp)
                 ) {
@@ -844,8 +1220,43 @@ fun DeadShotLobbyScreen(viewModel: DeadShotViewModel) {
     val chatMessages by viewModel.chatMessages.collectAsState()
     val friendsList by viewModel.friendsList.collectAsState()
 
+    // NEW STATES FROM VIEWMODEL
+    val selectedGameMode by viewModel.selectedGameMode.collectAsState()
+    val equippedOutfit by viewModel.equippedOutfit.collectAsState()
+    val unlockedOutfits by viewModel.unlockedOutfits.collectAsState()
+    val isDailyLimitAngelBundlePurchased by viewModel.isDailyLimitAngelBundlePurchased.collectAsState()
+    val dsgCurrency by viewModel.dsgCurrency.collectAsState()
+    val equippedCharacter by viewModel.equippedCharacter.collectAsState()
+    val equippedActiveSkill by viewModel.equippedActiveSkill.collectAsState()
+    val equippedPassiveSkill by viewModel.equippedPassiveSkill.collectAsState()
+    val unlockedCharacters by viewModel.unlockedCharacters.collectAsState()
+    val equippedWeaponSkinsVal by viewModel.equippedWeaponSkins.collectAsState()
+    val unlockedWeaponSkinsVal by viewModel.unlockedWeaponSkins.collectAsState()
+    
+    val sensitivityVal by viewModel.sensitivityVal.collectAsState()
+    val redDotSizeVal by viewModel.redDotSizeVal.collectAsState()
+    val joystickScaleVal by viewModel.joystickScaleVal.collectAsState()
+    val fireButtonScaleVal by viewModel.fireButtonScaleVal.collectAsState()
+    val retroSoundOn by viewModel.retroSoundOn.collectAsState()
+
+    // Dialog toggles
+    var showStoreDialog by remember { mutableStateOf(false) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
+    var showAchievementsDialog by remember { mutableStateOf(false) }
+    var showVaultDialog by remember { mutableStateOf(false) }
+    var showMapSelectionDialog by remember { mutableStateOf(false) }
+
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+
+    // FREE FIRE LUCK ROYALE LOCAL STATES
+    var storeActiveTab by remember { mutableStateOf("ROYALE") } // "ROYALE", "CHARACTERS", "BUNDLES"
+    var lastPrizeDrawn by remember { mutableStateOf("") }
+    var isSpinningRoyale by remember { mutableStateOf(false) }
+    var expandedActiveSkillSelector by remember { mutableStateOf(false) }
+    var expandedPassiveSkillSelector by remember { mutableStateOf(false) }
 
     // Navigation Tab Selection of Right sidebar panel
     var selectedRightTab by remember { mutableStateOf("FRIENDS") } // "MAIL", "CHAT", "FRIENDS"
@@ -1104,57 +1515,119 @@ fun DeadShotLobbyScreen(viewModel: DeadShotViewModel) {
                     )
                 }
 
-                // CURRENCY PANEL (Rubies tracker)
+                // CURRENCY PANEL (DSG currency tracker)
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .background(Color(0xD9101217), RoundedCornerShape(8.dp))
-                        .border(1.dp, DeadShotTheme.GoldAccent.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                        .border(1.5.dp, DeadShotTheme.GoldAccent, RoundedCornerShape(8.dp))
                         .padding(horizontal = 12.dp, vertical = 6.dp)
-                        .testTag("rubies_panel")
+                        .testTag("dsg_currency_panel")
                 ) {
                     val gemTransition = rememberInfiniteTransition()
-                    val rubyScale by gemTransition.animateFloat(
+                    val dsgScale by gemTransition.animateFloat(
                         initialValue = 0.95f,
                         targetValue = 1.15f,
                         animationSpec = infiniteRepeatable(
-                            animation = tween(1100, easing = FastOutSlowInEasing),
+                            animation = tween(1200, easing = FastOutSlowInEasing),
                             repeatMode = RepeatMode.Reverse
                         )
                     )
 
-                    // Stylized Ruby Vector Gem
+                    // Stylized Golden Shield Diamond / Coin Vector
                     Canvas(
                         modifier = Modifier
                             .size(16.dp)
-                            .scale(rubyScale)
+                            .scale(dsgScale)
                     ) {
                         val path = Path().apply {
                             moveTo(size.width * 0.5f, 0f)
                             lineTo(size.width, size.height * 0.35f)
-                            lineTo(size.width * 0.5f, size.height)
+                            lineTo(size.width * 0.8f, size.height)
+                            lineTo(size.width * 0.2f, size.height)
                             lineTo(0f, size.height * 0.35f)
                             close()
                         }
-                        drawPath(path, brush = Brush.linearGradient(colors = listOf(Color(0xFFFF5252), Color(0xFFFF1744))))
+                        drawPath(path, brush = Brush.verticalGradient(colors = listOf(Color(0xFFFFD700), Color(0xFFFF8C00))))
                     }
 
                     Spacer(modifier = Modifier.width(10.dp))
 
                     Column(horizontalAlignment = Alignment.End) {
                         Text(
-                            text = "${"%,d".format(rubies)} RUBY",
+                            text = "${"%,d".format(dsgCurrency)} DSG",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Black,
-                            color = Color.White,
+                            color = DeadShotTheme.GoldAccent,
                             fontFamily = FontFamily.Monospace
                         )
                         Text(
-                            text = "CREDITS",
+                            text = "GOLD GEMS",
                             fontSize = 7.sp,
                             fontFamily = FontFamily.Monospace,
-                            color = Color.White.copy(alpha = 0.4f)
+                            color = Color.White.copy(alpha = 0.5f)
                         )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // HIGH CONFLICT SETTINGS COG WHEEL TRIGGER
+                Box(
+                    modifier = Modifier
+                        .background(Color(0xD9101217), RoundedCornerShape(8.dp))
+                        .border(1.dp, DeadShotTheme.LaserGreen.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                        .size(38.dp)
+                        .clickable { showSettingsDialog = true }
+                        .testTag("btn_lobby_settings"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val settingsTransit = rememberInfiniteTransition()
+                    val rotAngle by settingsTransit.animateFloat(
+                        initialValue = 0f,
+                        targetValue = 360f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(8000, easing = LinearEasing),
+                            repeatMode = RepeatMode.Restart
+                        )
+                    )
+
+                    Canvas(
+                        modifier = Modifier
+                            .size(20.dp)
+                            .rotate(rotAngle)
+                    ) {
+                        val strokeW = 4f
+                        val gearRadius = size.width * 0.35f
+                        val ctr = center
+
+                        drawCircle(
+                            color = DeadShotTheme.LaserGreen,
+                            radius = gearRadius,
+                            center = ctr,
+                            style = Stroke(width = strokeW)
+                        )
+                        drawCircle(
+                            color = DeadShotTheme.LaserGreen,
+                            radius = gearRadius / 2f,
+                            center = ctr
+                        )
+
+                        for (i in 0 until 8) {
+                            val angleRad = (i * 45) * PI / 180f
+                            val startX = ctr.x + cos(angleRad).toFloat() * gearRadius
+                            val startY = ctr.y + sin(angleRad).toFloat() * gearRadius
+                            val endX = ctr.x + cos(angleRad).toFloat() * (gearRadius + 5f)
+                            val endY = ctr.y + sin(angleRad).toFloat() * (gearRadius + 5f)
+
+                            drawLine(
+                                color = DeadShotTheme.LaserGreen,
+                                start = Offset(startX, startY),
+                                end = Offset(endX, endY),
+                                strokeWidth = 4f,
+                                cap = StrokeCap.Round
+                            )
+                        }
                     }
                 }
             }
@@ -1173,37 +1646,10 @@ fun DeadShotLobbyScreen(viewModel: DeadShotViewModel) {
                         .fillMaxHeight(),
                     verticalArrangement = Arrangement.SpaceBetween
                 ) {
-                    // CONFIG CARDS ROWS (MAPS, WEAPONS, WEATHERS)
+                    // CONFIG CARDS ROWS (WEAPONS, WEATHERS) - MAP SELECTION MOVED TO BOTTOM DOCK
                     Column(
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        // 1. REGIONAL MAP SELECTION DECK
-                        Column {
-                            Text(
-                                text = "ARENA TARGET LOCATION (PAKISTAN)",
-                                fontSize = 9.sp,
-                                fontFamily = FontFamily.Monospace,
-                                color = Color.White.copy(alpha = 0.5f),
-                                letterSpacing = 2.sp,
-                                modifier = Modifier.padding(bottom = 4.dp)
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                PakistanMap.values().forEach { map ->
-                                    MapConfigChoiceCard(
-                                        label = map.label,
-                                        urdu = when(map) {
-                                            PakistanMap.KARACHI -> "کراچی"
-                                            PakistanMap.LAHORE -> "لاہور"
-                                            PakistanMap.ISLAMABAD -> "اسلام آباد"
-                                        },
-                                        isSelected = selectedMap == map,
-                                        onSelected = { viewModel.selectMap(map) },
-                                        modifier = Modifier.weight(1f).testTag("card_map_${map.name}")
-                                    )
-                                }
-                            }
-                        }
-
                         // 2. THE WEAPONS ARSENAL SELECTION
                         Column {
                             Text(
@@ -1250,6 +1696,51 @@ fun DeadShotLobbyScreen(viewModel: DeadShotViewModel) {
                                 }
                             }
                         }
+
+                        // 4. THE GAME MODES DECK (SOLO / DUO / SQUAD) WITH ACTIVE COMBATANT BREAKDOWNS
+                        Column {
+                            Text(
+                                text = "TEAM SQUAD DEPLOYMENT MODE",
+                                fontSize = 9.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = Color.White.copy(alpha = 0.5f),
+                                letterSpacing = 2.sp,
+                                modifier = Modifier.padding(bottom = 4.dp)
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                listOf("SOLO", "DUO", "SQUAD").forEach { mode ->
+                                    val isSel = selectedGameMode == mode
+                                    Card(
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = if (isSel) DeadShotTheme.CarbonBlack else Color(0x6616181C)
+                                        ),
+                                        border = BorderStroke(
+                                            width = 1.dp,
+                                            color = if (isSel) DeadShotTheme.LaserGreen else Color.White.copy(alpha = 0.05f)
+                                        ),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(34.dp)
+                                            .clickable { viewModel.selectGameMode(mode) }
+                                            .testTag("mode_card_$mode"),
+                                        shape = RoundedCornerShape(4.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = mode,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Black,
+                                                color = if (isSel) DeadShotTheme.LaserGreen else Color.White.copy(alpha = 0.6f),
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // TACTICAL SUM OF SELECTIONS INFO BOX
@@ -1258,26 +1749,60 @@ fun DeadShotLobbyScreen(viewModel: DeadShotViewModel) {
                         shape = RoundedCornerShape(6.dp),
                         border = BorderStroke(1.dp, Color.White.copy(alpha = 0.05f))
                     ) {
-                        Row(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .background(DeadShotTheme.LaserGreen, CircleShape)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "WARZONE CONFIGURED: ${selectedMap.locationName.uppercase()} // CLIMATE: ${selectedWeather.label.uppercase()} // ACTIVE FIREARM: ${selectedWeapon.label.uppercase()}",
-                                fontSize = 8.sp,
-                                fontFamily = FontFamily.Monospace,
-                                color = DeadShotTheme.MetallicSilver.copy(alpha = 0.6f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .background(DeadShotTheme.LaserGreen, CircleShape)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "WARZONE: ${selectedMap.locationName.uppercase()} CLIMATE: ${selectedWeather.label.uppercase()} FIREARM: ${selectedWeapon.label.uppercase()}",
+                                    fontSize = 8.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = DeadShotTheme.MetallicSilver.copy(alpha = 0.9f)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            
+                            val totalCombatants = when(selectedMap) {
+                                PakistanMap.KARACHI -> 50
+                                PakistanMap.LAHORE -> 50
+                                PakistanMap.ISLAMABAD -> 100
+                            }
+                            val diffLabel = when(selectedMap) {
+                                PakistanMap.KARACHI -> "EASY"
+                                PakistanMap.LAHORE -> "SO BUT HARD-MODE"
+                                PakistanMap.ISLAMABAD -> "HARD-MODE"
+                            }
+                            val teamQuantity = when(selectedGameMode) {
+                                "SOLO" -> 1
+                                "DUO" -> 2
+                                "SQUAD" -> 4
+                                else -> 1
+                            }
+                            val npcEnemies = totalCombatants - teamQuantity
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(4.dp)
+                                        .background(DeadShotTheme.TacticalRed, CircleShape)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = "DISPATCH BRIEF: $selectedGameMode ($diffLabel) - TOTAL COMBATANTS: $totalCombatants [YOU: 1, TEAM: ${teamQuantity - 1}, ENEMY TARGETS: $npcEnemies]",
+                                    fontSize = 7.5.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = DeadShotTheme.LaserGreen,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
                 }
@@ -1390,8 +1915,12 @@ fun DeadShotLobbyScreen(viewModel: DeadShotViewModel) {
                                             singleLine = true,
                                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                                             keyboardActions = KeyboardActions(onSend = {
-                                                viewModel.sendChatMessage(customChatInput.text)
-                                                customChatInput = TextFieldValue("")
+                                                if (customChatInput.text.isNotBlank()) {
+                                                    viewModel.sendChatMessage(customChatInput.text)
+                                                    customChatInput = TextFieldValue("")
+                                                    keyboardController?.hide()
+                                                    focusManager.clearFocus()
+                                                }
                                             }),
                                             modifier = Modifier.weight(1f).testTag("chat_input_field"),
                                             decorationBox = { innerTextField ->
@@ -1408,8 +1937,12 @@ fun DeadShotLobbyScreen(viewModel: DeadShotViewModel) {
                                             color = DeadShotTheme.NeonBlue,
                                             modifier = Modifier
                                                 .clickable {
-                                                    viewModel.sendChatMessage(customChatInput.text)
-                                                    customChatInput = TextFieldValue("")
+                                                    if (customChatInput.text.isNotBlank()) {
+                                                        viewModel.sendChatMessage(customChatInput.text)
+                                                        customChatInput = TextFieldValue("")
+                                                        keyboardController?.hide()
+                                                        focusManager.clearFocus()
+                                                    }
                                                 }
                                                 .padding(horizontal = 4.dp)
                                         )
@@ -1440,68 +1973,1681 @@ fun DeadShotLobbyScreen(viewModel: DeadShotViewModel) {
                 }
             }
 
-            // BOTTOM BAR: START GAME LAUNCH BINDER PANEL
+            // BOTTOM BAR: START GAME LAUNCH BINDER PANEL (FREE FIRE 4K ACCENT CLUSTER)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = 20.dp, end = 20.dp, bottom = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.Bottom
             ) {
-                // Return parameters back
-                OutlinedButton(
-                    onClick = { viewModel.navigateTo(ActiveScreen.LOGIN) },
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = Color.White.copy(alpha = 0.5f)
-                    ),
-                    shape = RoundedCornerShape(6.dp),
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
-                    modifier = Modifier.height(48.dp)
+                // Left-aligned tactical control keys
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("LOGOUT", fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                    OutlinedButton(
+                        onClick = { viewModel.navigateTo(ActiveScreen.LOGIN) },
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color.White.copy(alpha = 0.5f)
+                        ),
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+                        modifier = Modifier.height(46.dp)
+                    ) {
+                        Text("LOGOUT", fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                    }
+
+                    // DSA ACHIEVEMENT CABINET BUTTON
+                    OutlinedButton(
+                        onClick = { showAchievementsDialog = true },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = DeadShotTheme.LaserGreen),
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(1.dp, DeadShotTheme.LaserGreen.copy(alpha = 0.25f)),
+                        modifier = Modifier.height(46.dp).testTag("btn_lobby_dsa")
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                            Text("🏆 DSA", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("AWARDS", fontSize = 6.sp, fontFamily = FontFamily.Monospace, color = Color.White.copy(alpha = 0.5f))
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(2.dp))
+
+                    // VAULT CLOTHING COLLECTIONS CABINET BUTTON
+                    OutlinedButton(
+                        onClick = { showVaultDialog = true },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = DeadShotTheme.LaserGreen),
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(1.dp, DeadShotTheme.LaserGreen.copy(alpha = 0.25f)),
+                        modifier = Modifier.height(46.dp).testTag("btn_lobby_vault")
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                            Text("👕 VAULT", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("SUITS", fontSize = 6.sp, fontFamily = FontFamily.Monospace, color = Color.White.copy(alpha = 0.5f))
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(2.dp))
+
+                    // NPC GIFT STORE BUTTON
+                    OutlinedButton(
+                        onClick = { showStoreDialog = true },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF4D4D)),
+                        shape = RoundedCornerShape(6.dp),
+                        border = BorderStroke(1.dp, Color(0xFFFF4D4D).copy(alpha = 0.25f)),
+                        modifier = Modifier.height(46.dp).testTag("btn_lobby_store")
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                            Text("🎁 GIFT", fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("ANGEL", fontSize = 6.sp, fontFamily = FontFamily.Monospace, color = Color.White.copy(alpha = 0.5f))
+                        }
+                    }
                 }
 
-                Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(20.dp))
 
-                // GIANT BATTLEGROUND ACTION STARTER BUTTON
-                Button(
-                    onClick = {
-                        viewModel.setupArenaTargets()
-                        viewModel.navigateTo(ActiveScreen.ARENA)
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = DeadShotTheme.LaserGreen
-                    ),
-                    shape = RoundedCornerShape(6.dp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .shadow(elevation = 8.dp, spotColor = DeadShotTheme.LaserGreen, ambientColor = DeadShotTheme.LaserGreen)
-                        .testTag("btn_launch_sandbox")
+                // Right portion: Stack containing MAP SELECTION WIDGET above big DEPLOY Button!
+                Column(
+                    modifier = Modifier.width(310.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
+                    // NEW 4K STYLISH MAP SELECTION INTERACTIVE WIDGET (Free Fire style)
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(60.dp)
+                            .clickable { showMapSelectionDialog = true }
+                            .testTag("btn_lobby_map_select_widget"),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF14161C)),
+                        border = BorderStroke(1.dp, DeadShotTheme.LaserGreen.copy(alpha = 0.4f))
                     ) {
-                        Text(
-                            text = "DEPLOY INTO ${selectedMap.label.uppercase()}",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Black,
-                            color = Color.Black,
-                            letterSpacing = 2.sp
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "[ FPS MODE ]",
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.Black.copy(alpha = 0.6f)
-                        )
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            // High fidelity background canvas drawing representing the selected map inside a radar/grid!
+                            Canvas(modifier = Modifier.fillMaxSize()) {
+                                val width = size.width
+                                val height = size.height
+                                
+                                // Draw grid background
+                                for (x in 0..10) {
+                                    val xx = x * (width / 10f)
+                                    drawLine(
+                                        color = Color(0x1539FF14),
+                                        start = Offset(xx, 0f),
+                                        end = Offset(xx, height),
+                                        strokeWidth = 1f
+                                    )
+                                }
+                                for (y in 0..5) {
+                                    val yy = y * (height / 5f)
+                                    drawLine(
+                                        color = Color(0x1539FF14),
+                                        start = Offset(0f, yy),
+                                        end = Offset(width, yy),
+                                        strokeWidth = 1f
+                                    )
+                                }
+
+                                // Draw specific abstract indicators for each map to look ultra high tech
+                                when (selectedMap) {
+                                    PakistanMap.KARACHI -> {
+                                        drawCircle(
+                                            color = Color(0xFF00E5FF).copy(alpha = 0.15f),
+                                            center = Offset(width * 0.2f, height * 0.5f),
+                                            radius = 28f
+                                        )
+                                        drawCircle(
+                                            color = Color(0xFF00E5FF).copy(alpha = 0.8f),
+                                            center = Offset(width * 0.2f, height * 0.5f),
+                                            radius = 3f
+                                        )
+                                        drawLine(Color(0xFF00E5FF).copy(alpha = 0.4f), Offset(width*0.15f, height*0.4f), Offset(width*0.25f, height*0.4f), strokeWidth = 2f)
+                                        drawLine(Color(0xFF00E5FF).copy(alpha = 0.4f), Offset(width*0.12f, height*0.6f), Offset(width*0.22f, height*0.6f), strokeWidth = 2f)
+                                    }
+                                    PakistanMap.LAHORE -> {
+                                        drawCircle(
+                                            color = Color(0xFFFF5252).copy(alpha = 0.15f),
+                                            center = Offset(width * 0.2f, height * 0.5f),
+                                            radius = 28f
+                                        )
+                                        drawCircle(
+                                            color = Color(0xFFFF5252).copy(alpha = 0.8f),
+                                            center = Offset(width * 0.2f, height * 0.5f),
+                                            radius = 3f
+                                        )
+                                        drawLine(Color(0xFFFF5252).copy(alpha = 0.4f), Offset(width*0.12f, height*0.7f), Offset(width*0.12f, height*0.3f), strokeWidth = 3f)
+                                        drawLine(Color(0xFFFF5252).copy(alpha = 0.4f), Offset(width*0.12f, height*0.3f), Offset(width*0.2f, height*0.3f), strokeWidth = 3f)
+                                    }
+                                    PakistanMap.ISLAMABAD -> {
+                                        drawCircle(
+                                            color = DeadShotTheme.LaserGreen.copy(alpha = 0.15f),
+                                            center = Offset(width * 0.2f, height * 0.5f),
+                                            radius = 28f
+                                        )
+                                        drawCircle(
+                                            color = DeadShotTheme.LaserGreen.copy(alpha = 0.8f),
+                                            center = Offset(width * 0.2f, height * 0.5f),
+                                            radius = 3f
+                                        )
+                                        val path = Path().apply {
+                                            moveTo(width * 0.12f, height * 0.7f)
+                                            lineTo(width * 0.2f, height * 0.35f)
+                                            lineTo(width * 0.28f, height * 0.7f)
+                                        }
+                                        drawPath(path, color = DeadShotTheme.LaserGreen.copy(alpha = 0.35f), style = Stroke(width = 2f))
+                                    }
+                                }
+                            }
+
+                            // Glassmorphic text and selections info
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Black.copy(alpha = 0.35f))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .background(Color(0x33000000), RoundedCornerShape(6.dp))
+                                        .border(1.dp, DeadShotTheme.LaserGreen.copy(alpha = 0.5f), RoundedCornerShape(6.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = when (selectedMap) {
+                                            PakistanMap.KARACHI -> "🚢"
+                                            PakistanMap.LAHORE -> "🏰"
+                                            PakistanMap.ISLAMABAD -> "⛰️"
+                                        },
+                                        fontSize = 16.sp
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.width(10.dp))
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = "MAP SECTOR // ",
+                                            fontSize = 7.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.Bold,
+                                            color = DeadShotTheme.LaserGreen.copy(alpha = 0.8f)
+                                        )
+                                        Text(
+                                            text = "READY",
+                                            fontSize = 6.5.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF39FF14)
+                                        )
+                                    }
+                                    Text(
+                                        text = selectedMap.label.uppercase(),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Black,
+                                        color = Color.White,
+                                        letterSpacing = 1.sp
+                                    )
+                                    Text(
+                                        text = "MODE: $selectedGameMode | ${selectedWeather.label.uppercase()}",
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = Color.White.copy(alpha = 0.5f),
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.width(4.dp))
+
+                                Column(
+                                    horizontalAlignment = Alignment.End,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .background(DeadShotTheme.LaserGreen.copy(alpha = 0.15f), RoundedCornerShape(4.dp))
+                                            .border(0.5.dp, DeadShotTheme.LaserGreen, RoundedCornerShape(4.dp))
+                                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = "TAP TO MAP",
+                                                fontSize = 7.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = DeadShotTheme.LaserGreen,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                            Spacer(modifier = Modifier.width(2.dp))
+                                            Text(
+                                                text = "➔",
+                                                fontSize = 7.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = DeadShotTheme.LaserGreen
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // GIANT Start deployment button
+                    Button(
+                        onClick = {
+                            viewModel.startParachuteGlideSequence {
+                                viewModel.setupArenaTargets()
+                                viewModel.navigateTo(ActiveScreen.ARENA)
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = DeadShotTheme.LaserGreen
+                        ),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
+                            .shadow(elevation = 10.dp, spotColor = DeadShotTheme.LaserGreen, ambientColor = DeadShotTheme.LaserGreen)
+                            .testTag("btn_launch_sandbox")
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "BATTLE ZONE START",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Black,
+                                color = Color.Black,
+                                letterSpacing = 1.5.sp
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "⚡",
+                                fontSize = 11.sp,
+                                color = Color.Black
+                            )
+                        }
                     }
                 }
             }
         }
+
+        // 1. SETTINGS OVERLAY
+        if (showSettingsDialog) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.82f))
+                    .clickable { showSettingsDialog = false }
+                    .testTag("modal_settings"),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    color = Color(0xFF16181C),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, DeadShotTheme.LaserGreen.copy(alpha = 0.4f)),
+                    modifier = Modifier
+                        .fillMaxWidth(0.72f)
+                        .fillMaxHeight(0.85f)
+                        .clickable(enabled = false) {}
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("⚙️ SYSTEM TACTICAL SETTINGS PANEL", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Button(
+                                onClick = { showSettingsDialog = false },
+                                colors = ButtonDefaults.buttonColors(containerColor = DeadShotTheme.TacticalRed),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.height(28.dp)
+                            ) {
+                                Text("CLOSE", fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        
+                        Divider(color = Color.White.copy(alpha = 0.08f), modifier = Modifier.padding(vertical = 10.dp))
+
+                        Row(modifier = Modifier.fillMaxSize()) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
+                                Text("AIM SENSITIVITY MULTIPLIER", color = DeadShotTheme.LaserGreen, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                                Text("Current: ${"%.1f".format(sensitivityVal)}x", color = Color.White.copy(alpha = 0.6f), fontSize = 8.sp, fontFamily = FontFamily.Monospace)
+                                Slider(
+                                    value = sensitivityVal,
+                                    onValueChange = { viewModel.setSensitivity(it) },
+                                    valueRange = 0.1f..3.0f,
+                                    colors = SliderDefaults.colors(thumbColor = DeadShotTheme.LaserGreen, activeTrackColor = DeadShotTheme.LaserGreen)
+                                )
+
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                Text("RED DOT SCOPE CROSSHAIR SIZE", color = DeadShotTheme.LaserGreen, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                                Text("Current: ${redDotSizeVal.toInt()}DP", color = Color.White.copy(alpha = 0.6f), fontSize = 8.sp, fontFamily = FontFamily.Monospace)
+                                Slider(
+                                    value = redDotSizeVal,
+                                    onValueChange = { viewModel.setRedDotSize(it) },
+                                    valueRange = 4f..30f,
+                                    colors = SliderDefaults.colors(thumbColor = DeadShotTheme.LaserGreen, activeTrackColor = DeadShotTheme.LaserGreen)
+                                )
+                            }
+
+                            Column(modifier = Modifier.weight(1f).padding(start = 10.dp)) {
+                                Text("HUD JOYSTICK CONTROL SCALE", color = DeadShotTheme.LaserGreen, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                                Text("Current: ${"%.1f".format(joystickScaleVal)}x", color = Color.White.copy(alpha = 0.6f), fontSize = 8.sp, fontFamily = FontFamily.Monospace)
+                                Slider(
+                                    value = joystickScaleVal,
+                                    onValueChange = { viewModel.setJoystickScale(it) },
+                                    valueRange = 0.5f..2.0f,
+                                    colors = SliderDefaults.colors(thumbColor = DeadShotTheme.LaserGreen, activeTrackColor = DeadShotTheme.LaserGreen)
+                                )
+
+                                Spacer(modifier = Modifier.height(10.dp))
+
+                                Text("HUD FIRE / RELOAD KEY SCALE", color = DeadShotTheme.LaserGreen, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                                Text("Current: ${"%.1f".format(fireButtonScaleVal)}x", color = Color.White.copy(alpha = 0.6f), fontSize = 8.sp, fontFamily = FontFamily.Monospace)
+                                Slider(
+                                    value = fireButtonScaleVal,
+                                    onValueChange = { viewModel.setFireButtonScale(it) },
+                                    valueRange = 0.5f..2.0f,
+                                    colors = SliderDefaults.colors(thumbColor = DeadShotTheme.LaserGreen, activeTrackColor = DeadShotTheme.LaserGreen)
+                                )
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color.White.copy(alpha = 0.03f), RoundedCornerShape(4.dp))
+                                        .clickable { viewModel.toggleRetroSoundOn() }
+                                        .padding(8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column {
+                                        Text("14:11 RETRO SOUND ERA", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                        Text("Toggle 90s vintage soundfx synth", color = Color.White.copy(alpha = 0.5f), fontSize = 7.sp, fontFamily = FontFamily.Monospace)
+                                    }
+                                    Switch(
+                                        checked = retroSoundOn,
+                                        onCheckedChange = { viewModel.toggleRetroSoundOn() },
+                                        colors = SwitchDefaults.colors(checkedThumbColor = DeadShotTheme.LaserGreen, checkedTrackColor = DeadShotTheme.LaserGreen.copy(alpha = 0.4f))
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. ACHIEVEMENTS OVERLAY
+        if (showAchievementsDialog) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.82f))
+                    .clickable { showAchievementsDialog = false }
+                    .testTag("modal_achievements"),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    color = Color(0xFF16181C),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, DeadShotTheme.LaserGreen.copy(alpha = 0.4f)),
+                    modifier = Modifier
+                        .fillMaxWidth(0.65f)
+                        .fillMaxHeight(0.8f)
+                        .clickable(enabled = false) {}
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("🏅 DSA - DEAD SHOT ACHIEVEMENTS", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Button(
+                                onClick = { showAchievementsDialog = false },
+                                colors = ButtonDefaults.buttonColors(containerColor = DeadShotTheme.TacticalRed),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.height(28.dp)
+                            ) {
+                                Text("CLOSE", fontSize = 9.sp)
+                            }
+                        }
+
+                        Divider(color = Color.White.copy(alpha = 0.08f), modifier = Modifier.padding(vertical = 10.dp))
+
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            item {
+                                AchievementItem(title = "SADDAR CODENAME SURVIVOR", desc = "Land successfully at Karachi Docks Map and survey over 21 structures.", unlocked = true)
+                            }
+                            item {
+                                AchievementItem(title = "LAHORE BULLET SHIELD", desc = "Defeat combat targets in Normal/Hard difficulty on Lahore Fort.", unlocked = true)
+                            }
+                            item {
+                                val hasAngelSuit = unlockedOutfits.contains("Angel Suit Outfit")
+                                AchievementItem(title = "ANGEL DEPLOYMENT CONQUEROR", desc = "Purchase the limited Angel bundle of 10 Days limit.", unlocked = hasAngelSuit)
+                            }
+                            item {
+                                val holdManyRubies = rubies >= 1000
+                                AchievementItem(title = "DSC WAR MILLIONAIRE", desc = "Hold over 1,000 active ruby currency credits.", unlocked = holdManyRubies)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. VAULT OUTIFTS & SKIN CABINET (4K FREE FIRE REPLICA)
+        if (showVaultDialog) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.88f))
+                    .clickable { showVaultDialog = false }
+                    .testTag("modal_vault"),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    color = Color(0xFF0F1115),
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.5.dp, DeadShotTheme.GoldAccent),
+                    modifier = Modifier
+                        .fillMaxWidth(0.85f)
+                        .fillMaxHeight(0.82f)
+                        .clickable(enabled = false) {}
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("🥋 VAULT CUSTOMIZATION CABINET", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
+                            Button(
+                                onClick = { showVaultDialog = false },
+                                colors = ButtonDefaults.buttonColors(containerColor = DeadShotTheme.TacticalRed),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.height(28.dp)
+                            ) {
+                                Text("CLOSE", fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        Divider(color = Color.White.copy(alpha = 0.08f), modifier = Modifier.padding(vertical = 10.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            // Left Column: Outfits Cabinet
+                            Column(modifier = Modifier.weight(1.0f)) {
+                                Text("👕 UNLOCKED SQUAD OUTFITS", color = DeadShotTheme.GoldAccent, fontSize = 9.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    items(unlockedOutfits) { outfit ->
+                                        val isEquipped = equippedOutfit == outfit
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(if (isEquipped) Color(0xFF231E12) else Color.White.copy(alpha = 0.03f), RoundedCornerShape(6.dp))
+                                                .border(1.dp, if (isEquipped) DeadShotTheme.GoldAccent else Color.Transparent, RoundedCornerShape(6.dp))
+                                                .clickable { viewModel.equipOutfit(outfit) }
+                                                .padding(8.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(outfit.uppercase(), color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                                Text(
+                                                    text = when(outfit) {
+                                                        "Standard Outfit" -> "Standard green combat field camouflage."
+                                                        "Tactical Camo" -> "Saddar Navy and desert dunes stealth mesh."
+                                                        "Golden Elite Armor" -> "Heavy golden alloys reflecting laser fields."
+                                                        "Angel Suit Outfit" -> "Premium feathered bundle with wing thrusters!"
+                                                        else -> outfit
+                                                    },
+                                                    color = Color.White.copy(alpha = 0.5f),
+                                                    fontSize = 7.5.sp,
+                                                    lineHeight = 9.sp,
+                                                    fontFamily = FontFamily.Monospace
+                                                )
+                                            }
+                                            Button(
+                                                onClick = { viewModel.equipOutfit(outfit) },
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = if (isEquipped) DeadShotTheme.GoldAccent else Color.White.copy(alpha = 0.08f)
+                                                ),
+                                                shape = RoundedCornerShape(4.dp),
+                                                modifier = Modifier.height(26.dp),
+                                                contentPadding = PaddingValues(0.dp)
+                                            ) {
+                                                Text(
+                                                    text = if (isEquipped) "EQUIPPED" else "EQUIP",
+                                                    fontSize = 8.sp,
+                                                    color = if (isEquipped) Color.Black else Color.White,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Right Column: Weapon Skins Cabinet
+                            Column(modifier = Modifier.weight(1.1f)) {
+                                Text("🔫 UNLOCKED WEAPON COSMETICS", color = DeadShotTheme.GoldAccent, fontSize = 9.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                Spacer(modifier = Modifier.height(6.dp))
+
+                                LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    items(unlockedWeaponSkinsVal) { skin ->
+                                        val isEquippedAWP = equippedWeaponSkinsVal["AWP"] == skin
+                                        val isEquippedM4 = equippedWeaponSkinsVal["M4A1"] == skin
+                                        val isEquippedDeagle = equippedWeaponSkinsVal["DEAGLE"] == skin
+                                        val isAnyEquipped = isEquippedAWP || isEquippedM4 || isEquippedDeagle
+
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .background(if (isAnyEquipped) Color(0xFF1E231C) else Color.White.copy(alpha = 0.03f), RoundedCornerShape(6.dp))
+                                                .border(1.dp, if (isAnyEquipped) DeadShotTheme.LaserGreen else Color.Transparent, RoundedCornerShape(6.dp))
+                                                .padding(8.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(skin.uppercase(), color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                                Text(
+                                                    text = when {
+                                                        skin.contains("Viper") -> "M4A1 Core: High rate of bullet frequency trail."
+                                                        skin.contains("Drake") -> "AWP Core: Flame red dragon scope & burst trail."
+                                                        skin.contains("Shahi") -> "Desert Eagle: Royal Rajput Lahore gold alloys +30 dmg."
+                                                        else -> "Classic Slate: Factory standard default military metal."
+                                                    },
+                                                    color = Color.White.copy(alpha = 0.5f),
+                                                    fontSize = 7.5.sp,
+                                                    lineHeight = 9.sp,
+                                                    fontFamily = FontFamily.Monospace
+                                                )
+                                            }
+                                            
+                                            // Determine weapon target
+                                            val wpType = when {
+                                                skin.contains("M4A1") -> "M4A1"
+                                                skin.contains("AWP") -> "AWP"
+                                                else -> "DEAGLE"
+                                            }
+                                            
+                                            Button(
+                                                onClick = {
+                                                    viewModel.changeWeaponSkin(wpType, skin)
+                                                    Toast.makeText(context, "$skin equipped on $wpType!", Toast.LENGTH_SHORT).show()
+                                                },
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = if (isAnyEquipped) DeadShotTheme.LaserGreen else Color.White.copy(alpha = 0.08f)
+                                                ),
+                                                shape = RoundedCornerShape(4.dp),
+                                                modifier = Modifier.height(26.dp),
+                                                contentPadding = PaddingValues(0.dp)
+                                            ) {
+                                                Text(
+                                                    text = if (isAnyEquipped) "EQUIPPED" else "EQUIP",
+                                                    fontSize = 8.sp,
+                                                    color = if (isAnyEquipped) Color.Black else Color.White,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. LUCK ROYALE & CHARACTER STORE OVERLAY
+        if (showStoreDialog) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.88f))
+                    .clickable { showStoreDialog = false }
+                    .testTag("modal_store"),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    color = Color(0xFF0F1115),
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.5.dp, DeadShotTheme.GoldAccent),
+                    modifier = Modifier
+                        .fillMaxWidth(0.85f)
+                        .fillMaxHeight(0.85f)
+                        .clickable(enabled = false) {}
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp)
+                    ) {
+                        // Header block
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .background(DeadShotTheme.GoldAccent, CircleShape)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "⚡ DEAD SHOT LUCK ROYALE & FACTIONS",
+                                    color = Color.White,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Black,
+                                    fontFamily = FontFamily.Monospace,
+                                    letterSpacing = 1.sp
+                                )
+                            }
+                            
+                            // Tab Selectors
+                            Row(
+                                modifier = Modifier
+                                    .background(Color.Black, RoundedCornerShape(4.dp))
+                                    .padding(2.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                val tabs = listOf("ROYALE" to "🍀 LUCK ROYALE", "CHARACTERS" to "👤 HEROES", "BUNDLES" to "📦 BUNDLES")
+                                tabs.forEach { (tag, label) ->
+                                    val isSel = storeActiveTab == tag
+                                    Box(
+                                        modifier = Modifier
+                                            .background(
+                                                if (isSel) DeadShotTheme.GoldAccent else Color.Transparent,
+                                                RoundedCornerShape(3.dp)
+                                            )
+                                            .clickable { storeActiveTab = tag }
+                                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                                    ) {
+                                        Text(
+                                            text = label,
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isSel) Color.Black else Color.White
+                                        )
+                                    }
+                                }
+                            }
+
+                            Button(
+                                onClick = { showStoreDialog = false },
+                                colors = ButtonDefaults.buttonColors(containerColor = DeadShotTheme.TacticalRed),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.height(30.dp)
+                            ) {
+                                Text("CLOSE", fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        Divider(
+                            color = Color.White.copy(alpha = 0.08f),
+                            modifier = Modifier.padding(vertical = 10.dp)
+                        )
+
+                        // Content according to tabs
+                        when (storeActiveTab) {
+                            "ROYALE" -> {
+                                Row(
+                                    modifier = Modifier.fillMaxSize(),
+                                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                                ) {
+                                    // Left Column: The Interactive Spin Machine Wheel
+                                    Column(
+                                        modifier = Modifier
+                                            .weight(1.1f)
+                                            .fillMaxHeight()
+                                            .background(Color.Black.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                                            .border(1.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(12.dp))
+                                            .padding(12.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = "SPIN LUCK SPIN WHEEL",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Black,
+                                            color = DeadShotTheme.GoldAccent,
+                                            fontFamily = FontFamily.Monospace
+                                        )
+                                        Text(
+                                            text = "SPEND DSG FOR LEGENDARY CRATE WEAPON SKIN REWARDS!",
+                                            fontSize = 7.sp,
+                                            color = Color.LightGray,
+                                            fontFamily = FontFamily.Monospace
+                                        )
+
+                                        // Spin Wheel Canvas Visuals
+                                        Box(
+                                            modifier = Modifier
+                                                .size(110.dp)
+                                                .padding(6.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            val angleTransition = rememberInfiniteTransition()
+                                            val spinDegree by angleTransition.animateFloat(
+                                                initialValue = 0f,
+                                                targetValue = 360f,
+                                                animationSpec = infiniteRepeatable(
+                                                    animation = tween(if (isSpinningRoyale) 350 else 7000, easing = LinearEasing),
+                                                    repeatMode = RepeatMode.Restart
+                                                )
+                                            )
+
+                                            Canvas(modifier = Modifier.fillMaxSize()) {
+                                                rotate(spinDegree) {
+                                                    // Draw colorful segment sections
+                                                    val colors = listOf(Color(0xFFFF3366), Color(0xFF33CCFF), Color(0xFFFFCC00), Color(0xFF33FF66), Color(0xFF9933FF), Color(0xFFFF9900))
+                                                    val sliceAngle = 360f / colors.size
+                                                    for (idx in colors.indices) {
+                                                        drawArc(
+                                                            color = colors[idx],
+                                                            startAngle = idx * sliceAngle,
+                                                            sweepAngle = sliceAngle,
+                                                            useCenter = true
+                                                        )
+                                                    }
+                                                    // Inner rim
+                                                    drawCircle(Color.Black.copy(alpha = 0.5f), radius = size.minDimension * 0.42f)
+                                                }
+                                                // Center peg
+                                                drawCircle(Color.White, radius = 8f)
+                                                drawCircle(DeadShotTheme.GoldAccent, radius = 5f)
+                                            }
+
+                                            // Pointer arrow indicatior
+                                            Box(
+                                                modifier = Modifier
+                                                    .align(Alignment.TopCenter)
+                                                    .offset(y = (-6).dp)
+                                                    .size(14.dp)
+                                                    .background(Color.White, RoundedCornerShape(3.dp))
+                                                    .border(1.dp, Color.Red, RoundedCornerShape(3.dp))
+                                            )
+                                        }
+
+                                        // Draw banner or result
+                                        if (lastPrizeDrawn.isNotEmpty()) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .background(Color(0xFF231E12), RoundedCornerShape(6.dp))
+                                                    .border(1.dp, DeadShotTheme.GoldAccent, RoundedCornerShape(6.dp))
+                                                    .padding(8.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                    Text("🔥 UNLOCKED REWARD:", color = DeadShotTheme.GoldAccent, fontSize = 7.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                                    Spacer(modifier = Modifier.height(2.dp))
+                                                    Text(lastPrizeDrawn.uppercase(), color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
+                                                    Spacer(modifier = Modifier.height(2.dp))
+                                                    Text("AUTO-EQUIPPED IN VAULT CABINET", color = Color.LightGray, fontSize = 6.sp)
+                                                }
+                                            }
+                                        } else {
+                                            Text(
+                                                text = "SPIN COST: 100 DSG GEMS",
+                                                color = Color.White.copy(alpha = 0.4f),
+                                                fontSize = 8.sp,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                        }
+
+                                        Button(
+                                            onClick = {
+                                                if (dsgCurrency >= 100) {
+                                                    isSpinningRoyale = true
+                                                    coroutineScope.launch {
+                                                        delay(1200)
+                                                        isSpinningRoyale = false
+                                                        viewModel.spinLuckRoyale { prize ->
+                                                            lastPrizeDrawn = prize
+                                                            Toast.makeText(context, "LUCK DRAW WIN: $prize!", Toast.LENGTH_LONG).show()
+                                                        }
+                                                    }
+                                                } else {
+                                                    Toast.makeText(context, "Insufficient DSG balance! Keep training or claim mail bonuses.", Toast.LENGTH_SHORT).show()
+                                                }
+                                            },
+                                            enabled = !isSpinningRoyale && dsgCurrency >= 100,
+                                            colors = ButtonDefaults.buttonColors(containerColor = DeadShotTheme.GoldAccent, disabledContainerColor = Color.DarkGray),
+                                            shape = RoundedCornerShape(6.dp),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(36.dp)
+                                        ) {
+                                            Text(
+                                                text = if (isSpinningRoyale) "RAFFLING CRATES..." else "SPIN SINGLE (100 DSG)",
+                                                color = Color.Black,
+                                                fontWeight = FontWeight.Black,
+                                                fontSize = 9.sp
+                                            )
+                                        }
+                                    }
+
+                                    // Right Column: List of jackpot prizes available in pool
+                                    Column(
+                                        modifier = Modifier.weight(0.9f)
+                                    ) {
+                                        Text(
+                                            text = "💎 ACTIVE PRIZEPOOL IN CRATE",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White,
+                                            fontFamily = FontFamily.Monospace
+                                        )
+                                        Spacer(modifier = Modifier.height(6.dp))
+
+                                        LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            val potentialRewards = listOf(
+                                                "Neon Viper M4A1" to "⚡ Neon green speed reload tracking barrel.",
+                                                "Crimson Drake AWP" to "🔥 Flame red dragon custom optical muzzle blast.",
+                                                "Luxe Shahi Deagle" to "👑 Elegant Lahore Shahi gold gold alloy plating.",
+                                                "Angel Suit Outfit" to "🛡️ Legendary angel feathered back wing thruster.",
+                                                "Bonus +500 DSG!" to "💰 Instant rich payload boost directly in gems container."
+                                            )
+                                            items(potentialRewards) { (name, info) ->
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .background(Color.White.copy(alpha = 0.03f), RoundedCornerShape(6.dp))
+                                                        .padding(6.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(24.dp)
+                                                            .background(Color(0xFF271B1E), CircleShape),
+                                                        contentAlignment = Alignment.Center
+                                                    ) {
+                                                        Text("🎁", fontSize = 12.sp)
+                                                    }
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Column {
+                                                        Text(name.uppercase(), color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                                        Text(info, color = Color.Gray, fontSize = 7.sp, lineHeight = 8.sp)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            "CHARACTERS" -> {
+                                Column(modifier = Modifier.fillMaxSize()) {
+                                    Text(
+                                        text = "SELECT HERO SPECIALISTS • FACTION CAPABILITY SELECTION",
+                                        color = Color.White.copy(alpha = 0.5f),
+                                        fontSize = 8.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        modifier = Modifier.padding(bottom = 8.dp)
+                                    )
+
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .weight(1f),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        val characterPool = listOf(
+                                            Triple("DJ Alok", "🎵 DROP THE BEAT", "Pulsates 5m cyan aura healing status in Arena on active skill usage (+30 HP). Special music audio circle waves!"),
+                                            Triple("Chrono", "🌀 TIME TURNER", "Creates active sphere dome shield in battle. Eliminates heavy environment wind drift to absolute 0f!"),
+                                            Triple("Kelly", "⚡ DASH RUNNER", "Passive ultra hyper speed dash. Decreases scope target drift and enables instant aim precision.")
+                                        )
+
+                                        characterPool.forEach { (cName, skillLabel, sDesc) ->
+                                            val isEq = equippedCharacter == cName
+                                            Card(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .fillMaxHeight()
+                                                    .clickable { viewModel.equipCharacter(cName) }
+                                                    .border(
+                                                        width = if (isEq) 2.dp else 1.dp,
+                                                        color = if (isEq) DeadShotTheme.GoldAccent else Color.White.copy(alpha = 0.05f),
+                                                        shape = RoundedCornerShape(10.dp)
+                                                    ),
+                                                colors = CardDefaults.cardColors(
+                                                    containerColor = if (isEq) Color(0xFF191712) else Color(0xFF121418)
+                                                )
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier
+                                                        .fillMaxSize()
+                                                        .padding(10.dp),
+                                                    verticalArrangement = Arrangement.SpaceBetween
+                                                ) {
+                                                    Column {
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.SpaceBetween
+                                                        ) {
+                                                            Text(cName.uppercase(), color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .background(
+                                                                        if (isEq) DeadShotTheme.GoldAccent.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.04f),
+                                                                        CircleShape
+                                                                    )
+                                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                            ) {
+                                                                Text(
+                                                                    text = if (isEq) "EQUIPPED" else "READY",
+                                                                    color = if (isEq) DeadShotTheme.GoldAccent else Color.Gray,
+                                                                    fontSize = 6.sp,
+                                                                    fontWeight = FontWeight.Bold
+                                                                )
+                                                            }
+                                                        }
+                                                        Spacer(modifier = Modifier.height(6.dp))
+                                                        Text(skillLabel, color = DeadShotTheme.GoldAccent, fontSize = 8.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                                        Spacer(modifier = Modifier.height(4.dp))
+                                                        Text(sDesc, color = Color.White.copy(alpha = 0.5f), fontSize = 7.5.sp, lineHeight = 10.sp)
+                                                    }
+
+                                                    Button(
+                                                        onClick = {
+                                                            viewModel.equipCharacter(cName)
+                                                            Toast.makeText(context, "HERO EQUIPPED: $cName. READY FOR DEPLOYMENT!", Toast.LENGTH_SHORT).show()
+                                                        },
+                                                        colors = ButtonDefaults.buttonColors(
+                                                            containerColor = if (isEq) DeadShotTheme.GoldAccent else Color.White.copy(alpha = 0.08f)
+                                                        ),
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .height(28.dp),
+                                                        contentPadding = PaddingValues(0.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = if (isEq) "ACTIVE COMMAND" else "SELECT HERO",
+                                                            fontSize = 8.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = if (isEq) Color.Black else Color.White
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    
+                                    // SKILL SLOTS MANAGEMENT SYSTEM DESK
+                                    Text(
+                                        text = "⚡ HERO FORCE ACTIVE & PASSIVE SKILL GEAR SLOTS",
+                                        color = Color.White.copy(alpha = 0.85f),
+                                        fontSize = 8.sp,
+                                        fontWeight = FontWeight.Black,
+                                        fontFamily = FontFamily.Monospace,
+                                        letterSpacing = 1.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(5.dp))
+
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(58.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        // ACTIVE SKILL CARD
+                                        Card(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .fillMaxHeight()
+                                                .clickable {
+                                                    expandedActiveSkillSelector = !expandedActiveSkillSelector
+                                                    expandedPassiveSkillSelector = false
+                                                }
+                                                .border(
+                                                    width = 1.dp,
+                                                    color = if (expandedActiveSkillSelector) DeadShotTheme.GoldAccent else Color.White.copy(alpha = 0.08f),
+                                                    shape = RoundedCornerShape(8.dp)
+                                                ),
+                                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0C0E12))
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxSize().padding(6.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(28.dp)
+                                                        .background(DeadShotTheme.GoldAccent.copy(alpha = 0.15f), CircleShape),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(
+                                                        text = when (equippedActiveSkill) {
+                                                            "Drop the Beat" -> "🎵"
+                                                            "Time Turner" -> "🛡️"
+                                                            "Deadly Velocity" -> "⚡"
+                                                            "Master of All" -> "☸️"
+                                                            else -> "⭐"
+                                                        },
+                                                        fontSize = 14.sp
+                                                     )
+                                                }
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text("ACTIVE ABILITY SLOT", color = Color.Gray, fontSize = 6.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                                    Text(equippedActiveSkill.uppercase(), color = Color.White, fontSize = 8.5.sp, fontWeight = FontWeight.Black)
+                                                    Text("Click to swap active spell", color = DeadShotTheme.GoldAccent.copy(alpha = 0.8f), fontSize = 5.5.sp, fontFamily = FontFamily.Monospace)
+                                                }
+                                            }
+                                        }
+
+                                        // PASSIVE SKILL CARD
+                                        Card(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .fillMaxHeight()
+                                                .clickable {
+                                                    expandedPassiveSkillSelector = !expandedPassiveSkillSelector
+                                                    expandedActiveSkillSelector = false
+                                                }
+                                                .border(
+                                                    width = 1.dp,
+                                                    color = if (expandedPassiveSkillSelector) DeadShotTheme.LaserGreen else Color.White.copy(alpha = 0.08f),
+                                                    shape = RoundedCornerShape(8.dp)
+                                                ),
+                                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0C0E12))
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxSize().padding(6.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(28.dp)
+                                                        .background(DeadShotTheme.LaserGreen.copy(alpha = 0.15f), CircleShape),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(
+                                                        text = when (equippedPassiveSkill) {
+                                                            "Maxim's Gluttony" -> "🩹"
+                                                            "Moco's Hacker Eye" -> "👁️"
+                                                            "Andrew's Vest Protection" -> "🦺"
+                                                            else -> "🛡️"
+                                                        },
+                                                        fontSize = 14.sp
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text("PASSIVE BUFF SLOT", color = Color.Gray, fontSize = 6.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                                    Text(equippedPassiveSkill.uppercase(), color = Color.White, fontSize = 8.5.sp, fontWeight = FontWeight.Black)
+                                                    Text("Click to swap passive buff", color = DeadShotTheme.LaserGreen.copy(alpha = 0.8f), fontSize = 5.5.sp, fontFamily = FontFamily.Monospace)
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // ACTIVE SKILL DRAWER PANEL
+                                    if (expandedActiveSkillSelector) {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Card(
+                                            colors = CardDefaults.cardColors(containerColor = Color(0xFF14161C)),
+                                            border = BorderStroke(1.dp, DeadShotTheme.GoldAccent.copy(alpha = 0.3f)),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Column(modifier = Modifier.padding(6.dp)) {
+                                                Text("CHOOSE ACTIVE ABILITY TO EQUIP INSIDE COMBAT GEAR:", color = DeadShotTheme.GoldAccent, fontSize = 7.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                val actives = listOf(
+                                                    Triple("Drop the Beat", "🎵 Aura Heal", "Restores +25 HP/sec while aura triggered! Cooldown 35s."),
+                                                    Triple("Time Turner", "🛡️ Field Shield", "Creates dome forcefield blocks. Bypasses sandstorm drifts completely!"),
+                                                    Triple("Deadly Velocity", "⚡ Speed Spark", "Increases sensitivity speed by +50% and bullet deals double 2x damage!"),
+                                                    Triple("Master of All", "☸️ EP Master", "Recovers EP to 250 instantly and grants +40 HP health aura burst.")
+                                                )
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    actives.forEach { (skillName, label, desc) ->
+                                                        val isSelected = equippedActiveSkill == skillName
+                                                        Card(
+                                                            modifier = Modifier
+                                                                .weight(1f)
+                                                                .height(52.dp)
+                                                                .clickable {
+                                                                    viewModel.equipActiveSkill(skillName)
+                                                                    Toast.makeText(context, "ACTIVE SLOT: $skillName equipped!", Toast.LENGTH_SHORT).show()
+                                                                }
+                                                                .border(
+                                                                    width = if (isSelected) 1.5.dp else 1.dp,
+                                                                    color = if (isSelected) DeadShotTheme.GoldAccent else Color.White.copy(alpha = 0.05f),
+                                                                    shape = RoundedCornerShape(6.dp)
+                                                                ),
+                                                            colors = CardDefaults.cardColors(containerColor = if (isSelected) Color(0xFF221F18) else Color(0xFF0F1115))
+                                                        ) {
+                                                            Column(
+                                                                modifier = Modifier.fillMaxSize().padding(4.dp),
+                                                                verticalArrangement = Arrangement.SpaceBetween
+                                                            ) {
+                                                                Text(label, color = if (isSelected) DeadShotTheme.GoldAccent else Color.White, fontSize = 6.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                                                Text(desc, color = Color.Gray, fontSize = 5.2.sp, lineHeight = 6.sp)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // PASSIVE SKILL DRAWER PANEL
+                                    if (expandedPassiveSkillSelector) {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Card(
+                                            colors = CardDefaults.cardColors(containerColor = Color(0xFF14161C)),
+                                            border = BorderStroke(1.dp, DeadShotTheme.LaserGreen.copy(alpha = 0.3f)),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Column(modifier = Modifier.padding(6.dp)) {
+                                                Text("CHOOSE PASSIVE ENHANCEMENT TRAIT TO ENHANCE SOLDIER:", color = DeadShotTheme.LaserGreen, fontSize = 7.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                                Spacer(modifier = Modifier.height(4.dp))
+                                                val passives = listOf(
+                                                    Triple("Maxim's Gluttony", "🩹 Quick Heal", "Cuts therapeutic healing medkit timer by 50% down to 1.5 seconds!"),
+                                                    Triple("Moco's Hacker Eye", "👁️ Hacker Tag", "Tags struck targets with a bright holographic hacker pulse for 4s!"),
+                                                    Triple("Andrew's Vest Protection", "🦺 Andrew Vest", "Raises absolute maximum player HP boundaries ceiling to 240 HP!")
+                                                )
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    passives.forEach { (skillName, label, desc) ->
+                                                        val isSelected = equippedPassiveSkill == skillName
+                                                        Card(
+                                                            modifier = Modifier
+                                                                .weight(1f)
+                                                                .height(52.dp)
+                                                                .clickable {
+                                                                    viewModel.equipPassiveSkill(skillName)
+                                                                    Toast.makeText(context, "PASSIVE SLOT: $skillName equipped!", Toast.LENGTH_SHORT).show()
+                                                                }
+                                                                .border(
+                                                                    width = if (isSelected) 1.5.dp else 1.dp,
+                                                                    color = if (isSelected) DeadShotTheme.LaserGreen else Color.White.copy(alpha = 0.05f),
+                                                                    shape = RoundedCornerShape(6.dp)
+                                                                ),
+                                                            colors = CardDefaults.cardColors(containerColor = if (isSelected) Color(0xFF16201B) else Color(0xFF0F1115))
+                                                        ) {
+                                                            Column(
+                                                                modifier = Modifier.fillMaxSize().padding(4.dp),
+                                                                verticalArrangement = Arrangement.SpaceBetween
+                                                            ) {
+                                                                Text(label, color = if (isSelected) DeadShotTheme.LaserGreen else Color.White, fontSize = 6.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                                                Text(desc, color = Color.Gray, fontSize = 5.2.sp, lineHeight = 6.sp)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            "BUNDLES" -> {
+                                Column {
+                                    Card(
+                                        colors = CardDefaults.cardColors(containerColor = Color(0x2239FF14)),
+                                        border = BorderStroke(1.dp, DeadShotTheme.LaserGreen.copy(alpha = 0.3f)),
+                                        modifier = Modifier.fillMaxWidth().clickable {
+                                            viewModel.claimMidnightBonus()
+                                            Toast.makeText(context, "120 DSG claimed!", Toast.LENGTH_SHORT).show()
+                                        }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(10.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column {
+                                                Text("⏰ 12:00 MIDNIGHT RECHARGE DSG CLAIMS", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                                Text("Claim free daily midnight reload bonus of 120 DSG instantly", color = Color.White.copy(alpha = 0.6f), fontSize = 8.sp, fontFamily = FontFamily.Monospace)
+                                            }
+                                            Button(
+                                                onClick = {
+                                                    viewModel.claimMidnightBonus()
+                                                    Toast.makeText(context, "120 DSG claimed!", Toast.LENGTH_SHORT).show()
+                                                },
+                                                colors = ButtonDefaults.buttonColors(containerColor = DeadShotTheme.LaserGreen),
+                                                shape = RoundedCornerShape(4.dp),
+                                                modifier = Modifier.height(26.dp)
+                                            ) {
+                                                Text("CLAIM +120 DSG", fontSize = 9.sp, color = Color.Black, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(Color.White.copy(alpha = 0.03f), RoundedCornerShape(8.dp))
+                                            .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(8.dp))
+                                            .padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(60.dp)
+                                                .background(Color(0xFF2C1E21), CircleShape)
+                                                .border(2.dp, Color(0xFFFF5252), CircleShape),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text("😇", fontSize = 32.sp)
+                                        }
+
+                                        Spacer(modifier = Modifier.width(14.dp))
+
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text("ANGEL SUIT OVERPOWER BUNDLE", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
+                                            Text("OFFER EXPIRY: 10 DAYS LIMIT", color = Color(0xFFFF5252), fontSize = 8.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                            Text("Unlocks premium feathered armor in the Vault clothing suite. Equips angelic golden-gilded thrusters.", color = Color.White.copy(alpha = 0.5f), fontSize = 8.sp, fontFamily = FontFamily.Monospace)
+                                        }
+
+                                        Spacer(modifier = Modifier.width(10.dp))
+
+                                        if (isDailyLimitAngelBundlePurchased) {
+                                            Button(
+                                                onClick = {},
+                                                enabled = false,
+                                                colors = ButtonDefaults.buttonColors(disabledContainerColor = Color.DarkGray),
+                                                shape = RoundedCornerShape(4.dp)
+                                            ) {
+                                                Text("OWNED", fontSize = 10.sp, color = Color.LightGray)
+                                            }
+                                        } else {
+                                            Button(
+                                                onClick = {
+                                                    val success = viewModel.purchaseAngelBundle(800)
+                                                    if (success) {
+                                                        Toast.makeText(context, "Angel Bundle Purchased! Equipped in Vault.", Toast.LENGTH_LONG).show()
+                                                    } else {
+                                                        Toast.makeText(context, "Insufficient DSG! (Needs 800 DSG)", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                },
+                                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF4D4D)),
+                                                shape = RoundedCornerShape(4.dp)
+                                            ) {
+                                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                    Text("BUY BUNDLE", fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                                    Text("💎 800 DSG", fontSize = 8.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. STAINLESS SATELLITE TACTICAL MAP SELECTION DIRECTORY (4K ULTRA ACCENT)
+        if (showMapSelectionDialog) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.88f))
+                    .clickable { showMapSelectionDialog = false }
+                    .testTag("modal_map_selection"),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    color = Color(0xFF0F1115),
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.5.dp, DeadShotTheme.LaserGreen),
+                    modifier = Modifier
+                        .fillMaxWidth(0.85f)
+                        .fillMaxHeight(0.85f)
+                        .clickable(enabled = false) {}
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp)
+                    ) {
+                        // Header block
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .background(DeadShotTheme.LaserGreen, CircleShape)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "PAKISTAN BATTLEGROUND TACTICAL DIRECTOR",
+                                        color = Color.White,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Black,
+                                        fontFamily = FontFamily.Monospace,
+                                        letterSpacing = 1.sp
+                                    )
+                                }
+                                Text(
+                                    text = "SELECT RE-ENTRY CODENAME FIELD SECTOR • SATELLITE LINK SYNC ACTIVE",
+                                    color = DeadShotTheme.LaserGreen.copy(alpha = 0.7f),
+                                    fontSize = 8.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    modifier = Modifier.padding(start = 16.dp, top = 2.dp)
+                                )
+                            }
+                            Button(
+                                onClick = { showMapSelectionDialog = false },
+                                colors = ButtonDefaults.buttonColors(containerColor = DeadShotTheme.TacticalRed),
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier.height(30.dp)
+                            ) {
+                                Text("CLOSE", fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        Divider(
+                            color = Color.White.copy(alpha = 0.08f),
+                            modifier = Modifier.padding(vertical = 8.dp)
+                        )
+
+                        // 3 Maps side-by-side!
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            PakistanMap.values().forEach { map ->
+                                val isSelected = selectedMap == map
+                                val urduText = when(map) {
+                                    PakistanMap.KARACHI -> "کراچی پورٹ"
+                                    PakistanMap.LAHORE -> "شاہی قلعہ لاہور"
+                                    PakistanMap.ISLAMABAD -> "اسلام آباد مارگلہ"
+                                }
+                                
+                                Card(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight()
+                                        .clickable {
+                                            viewModel.selectMap(map)
+                                        }
+                                        .border(
+                                            width = if (isSelected) 2.dp else 1.dp,
+                                            color = if (isSelected) DeadShotTheme.LaserGreen else Color.White.copy(alpha = 0.06f),
+                                            shape = RoundedCornerShape(12.dp)
+                                        ),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (isSelected) Color(0xFF132014) else Color(0xFF14161B)
+                                    )
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(10.dp),
+                                        verticalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column {
+                                            // Top row coordinates & index
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = when(map) {
+                                                        PakistanMap.KARACHI -> "LAT: 24.86° N | LON: 67.00° E"
+                                                        PakistanMap.LAHORE -> "LAT: 31.58° N | LON: 74.32° E"
+                                                        PakistanMap.ISLAMABAD -> "LAT: 33.72° N | LON: 73.04° E"
+                                                    },
+                                                    color = Color.White.copy(alpha = 0.4f),
+                                                    fontSize = 7.sp,
+                                                    fontFamily = FontFamily.Monospace
+                                                )
+                                                
+                                                Box(
+                                                    modifier = Modifier
+                                                        .background(
+                                                            if (isSelected) DeadShotTheme.LaserGreen.copy(alpha = 0.2f)
+                                                            else Color.White.copy(alpha = 0.04f),
+                                                            CircleShape
+                                                        )
+                                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text(
+                                                        text = if (isSelected) "ACTIVE" else "STANDBY",
+                                                        color = if (isSelected) DeadShotTheme.LaserGreen else Color.Gray,
+                                                        fontSize = 7.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        fontFamily = FontFamily.Monospace
+                                                    )
+                                                }
+                                            }
+
+                                            Spacer(modifier = Modifier.height(8.dp))
+
+                                            // Styled Map Name & Urdu
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = map.label.uppercase(),
+                                                    color = Color.White,
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Black,
+                                                    letterSpacing = 1.sp
+                                                )
+                                                Text(
+                                                    text = urduText,
+                                                    color = if (isSelected) DeadShotTheme.LaserGreen else Color.White.copy(alpha = 0.6f),
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+
+                                            Spacer(modifier = Modifier.height(4.dp))
+
+                                            // Map Spec Canvas visualizer!
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(60.dp)
+                                                    .background(Color.Black.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                                                    .border(0.5.dp, Color.White.copy(alpha = 0.05f), RoundedCornerShape(8.dp)),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Canvas(modifier = Modifier.fillMaxSize()) {
+                                                    // Draw custom coordinate satellite radar scan lines for visual wow!
+                                                    val w = size.width
+                                                    val h = size.height
+                                                    val pulse = h * 0.45f
+                                                    
+                                                    // Holographic horizontal sweeping laser line
+                                                    drawLine(
+                                                        color = DeadShotTheme.LaserGreen.copy(alpha = 0.12f),
+                                                        start = Offset(0f, h * 0.5f),
+                                                        end = Offset(w, h * 0.5f),
+                                                        strokeWidth = 2f
+                                                    )
+                                                    
+                                                    drawCircle(
+                                                        color = if (isSelected) DeadShotTheme.LaserGreen.copy(alpha = 0.05f) else Color.White.copy(alpha = 0.02f),
+                                                        radius = pulse,
+                                                        center = center
+                                                    )
+                                                    drawCircle(
+                                                        color = if (isSelected) DeadShotTheme.LaserGreen.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.08f),
+                                                        radius = pulse * 0.6f,
+                                                        center = center,
+                                                        style = Stroke(width = 1f)
+                                                    )
+                                                    
+                                                    // Small scan dot indicator
+                                                    val dotX = when(map) {
+                                                        PakistanMap.KARACHI -> w * 0.3f
+                                                        PakistanMap.LAHORE -> w * 0.5f
+                                                        PakistanMap.ISLAMABAD -> w * 0.7f
+                                                    }
+                                                    val dotY = h * 0.5f
+                                                    drawCircle(
+                                                        color = if (isSelected) Color(0xFF39FF14) else Color.Red,
+                                                        radius = 4f,
+                                                        center = Offset(dotX, dotY)
+                                                    )
+                                                }
+                                                Text(
+                                                    text = when(map) {
+                                                        PakistanMap.KARACHI -> "⚓ HARBOR CONTAINERS REGION"
+                                                        PakistanMap.LAHORE -> "🏰 ROYAL RAJPUT RESIDENCY"
+                                                        PakistanMap.ISLAMABAD -> "⛰️ MARGALLA SCENIC DEFENSE GAP"
+                                                    },
+                                                    color = Color.White.copy(alpha = 0.4f),
+                                                    fontSize = 7.sp,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp)
+                                                )
+                                            }
+
+                                            Spacer(modifier = Modifier.height(8.dp))
+
+                                            // Map Long description
+                                            Text(
+                                                text = map.desc,
+                                                color = Color.White.copy(alpha = 0.5f),
+                                                fontSize = 9.sp,
+                                                lineHeight = 11.sp,
+                                                fontFamily = FontFamily.SansSerif
+                                            )
+                                        }
+
+                                        Column {
+                                            Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 4.dp))
+
+                                            // Interactive selector or equipment indicators
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column {
+                                                    Text(
+                                                        text = "THREAT MATRIX",
+                                                        fontSize = 7.sp,
+                                                        color = Color.White.copy(alpha = 0.4f),
+                                                        fontFamily = FontFamily.Monospace
+                                                    )
+                                                    Text(
+                                                        text = when(map) {
+                                                            PakistanMap.KARACHI -> "EASY (50 ENEMIES)"
+                                                            PakistanMap.LAHORE -> "SO BUT HARD (50 ENEMIES)"
+                                                            PakistanMap.ISLAMABAD -> "HARD (100 ENEMIES)"
+                                                        },
+                                                        fontSize = 8.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = when(map) {
+                                                            PakistanMap.KARACHI -> Color(0xFF00FF87)
+                                                            PakistanMap.LAHORE -> Color(0xFFFFC107)
+                                                            PakistanMap.ISLAMABAD -> Color(0xFFFF3D00)
+                                                        },
+                                                        fontFamily = FontFamily.Monospace
+                                                    )
+                                                }
+
+                                                Button(
+                                                    onClick = {
+                                                        viewModel.selectMap(map)
+                                                        Toast.makeText(context, "DEPLOY FIELD SECURED: ${map.label.uppercase()}", Toast.LENGTH_SHORT).show()
+                                                        showMapSelectionDialog = false
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(
+                                                        containerColor = if (isSelected) DeadShotTheme.LaserGreen else Color.White.copy(alpha = 0.08f)
+                                                    ),
+                                                    shape = RoundedCornerShape(4.dp),
+                                                    modifier = Modifier.height(28.dp).testTag("select_map_${map.name}")
+                                                ) {
+                                                    Text(
+                                                        text = if (isSelected) "EQUIPPED" else "DEPLOY HERE",
+                                                        fontSize = 8.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = if (isSelected) Color.Black else Color.White
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AchievementItem(title: String, desc: String, unlocked: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.03f), RoundedCornerShape(6.dp))
+            .padding(10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, color = if (unlocked) DeadShotTheme.LaserGreen else Color.Gray, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+            Text(desc, color = Color.White.copy(alpha = 0.4f), fontSize = 8.sp, fontFamily = FontFamily.Monospace)
+        }
+        Text(
+            text = if (unlocked) "UNLOCKED" else "LOCKED",
+            color = if (unlocked) DeadShotTheme.LaserGreen else Color.DarkGray,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace
+        )
     }
 }
 
@@ -1884,6 +4030,12 @@ fun DeadShotArenaScreen(viewModel: DeadShotViewModel) {
     val selectedWeapon by viewModel.selectedWeapon.collectAsState()
     val activeCameraAngle by viewModel.activeCameraAngle.collectAsState()
 
+    // RETRIEVED HUD SETTING STATES
+    val sensitivityVal by viewModel.sensitivityVal.collectAsState()
+    val redDotSizeVal by viewModel.redDotSizeVal.collectAsState()
+    val joystickScaleVal by viewModel.joystickScaleVal.collectAsState()
+    val fireButtonScaleVal by viewModel.fireButtonScaleVal.collectAsState()
+
     val currentAmmo by viewModel.currentAmmo.collectAsState()
     val isReloading by viewModel.isReloading.collectAsState()
     val isFiring by viewModel.isFiring.collectAsState()
@@ -1892,6 +4044,44 @@ fun DeadShotArenaScreen(viewModel: DeadShotViewModel) {
     val scenicTargets by viewModel.scenicTargets.collectAsState()
     val score by viewModel.score.collectAsState()
 
+    // ACTIVE FREE FIRE MATCHMAKING ENGINE STATES
+    val survivorsCount by viewModel.survivorsCount.collectAsState()
+    val arenaKills by viewModel.arenaKills.collectAsState()
+    val battleLogFeed by viewModel.battleLogFeed.collectAsState()
+    val profileName by viewModel.profileName.collectAsState()
+    val dsgCurrency by viewModel.dsgCurrency.collectAsState()
+    val equippedCharacter by viewModel.equippedCharacter.collectAsState()
+    val equippedActiveSkill by viewModel.equippedActiveSkill.collectAsState()
+    val equippedPassiveSkill by viewModel.equippedPassiveSkill.collectAsState()
+    val mocoTaggedTargetId by viewModel.mocoTaggedTargetId.collectAsState()
+    val isSkillActive by viewModel.isSkillActive.collectAsState()
+    val skillCooldown by viewModel.skillCooldown.collectAsState()
+    val equippedWeaponSkinsByWp by viewModel.equippedWeaponSkins.collectAsState()
+
+    // FREE FIRE SYSTEM INTEGRATED ACTIVE STATE LIFECYCLES
+    val playerHp by viewModel.playerHp.collectAsState()
+    val playerEp by viewModel.playerEp.collectAsState()
+    val glooWallCount by viewModel.glooWallCount.collectAsState()
+    val isGlooWallDeployed by viewModel.isGlooWallDeployed.collectAsState()
+    val glooWallHp by viewModel.glooWallHp.collectAsState()
+    val glooWallX by viewModel.glooWallX.collectAsState()
+    val glooWallY by viewModel.glooWallY.collectAsState()
+    val glooWallSecondsLeft by viewModel.glooWallSecondsLeft.collectAsState()
+    val isBooyahActive by viewModel.isBooyahActive.collectAsState()
+    val medkitCount by viewModel.medkitCount.collectAsState()
+    val isChannelingHeal by viewModel.isChannelingHeal.collectAsState()
+    val healProgress by viewModel.healProgress.collectAsState()
+
+    val mushroomX by viewModel.mushroomX.collectAsState()
+    val mushroomY by viewModel.mushroomY.collectAsState()
+    val isMushroomVisible by viewModel.isMushroomVisible.collectAsState()
+
+    val airDropX by viewModel.airDropX.collectAsState()
+    val airDropY by viewModel.airDropY.collectAsState()
+    val isAirDropInbound by viewModel.isAirDropInbound.collectAsState()
+    val isAirDropLanded by viewModel.isAirDropLanded.collectAsState()
+    val isAirDropLooted by viewModel.isAirDropLooted.collectAsState()
+
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
@@ -1899,18 +4089,45 @@ fun DeadShotArenaScreen(viewModel: DeadShotViewModel) {
     var combatFeedbackMessage by remember { mutableStateOf("") }
     var feedbackTriggerToggle by remember { mutableStateOf(false) }
 
+    val glooWallScale = remember { Animatable(0f) }
+    LaunchedEffect(isGlooWallDeployed) {
+        if (isGlooWallDeployed) {
+            glooWallScale.snapTo(0f)
+            glooWallScale.animateTo(
+                targetValue = 1f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessLow
+                )
+            )
+        } else {
+            glooWallScale.animateTo(
+                targetValue = 0f,
+                animationSpec = tween(durationMillis = 350)
+            )
+        }
+    }
+
     // Touch/Aim parameters
     var crosshairX by remember { mutableStateOf(400f) }
     var crosshairY by remember { mutableStateOf(240f) }
 
-    // Particle rain / wind loop
+    // Particle rain / wind loop and dynamic weather positioning controls
     val simulationFrame = remember { mutableStateOf(0) }
-    LaunchedEffect(scenicTargets) {
+    LaunchedEffect(scenicTargets, selectedWeather, isSkillActive, equippedActiveSkill) {
         while (true) {
             delay(30)
             simulationFrame.value += 1
             // Perform automatic targets horizontal drifting if Islamabad hills active
             viewModel.updateMovingTargets(800f)
+
+            // DUST SANDSTORM ACTIVE: Aim sway drift (Bypassed if Time Turner barrier shield is active!)
+            if (selectedWeather == WeatherType.SANDSTORM && !(equippedActiveSkill == "Time Turner" && isSkillActive)) {
+                val swayX = (sin(simulationFrame.value * 0.08f) * 1.5f - 0.4f)
+                val swayY = (cos(simulationFrame.value * 0.06f) * 1.1f)
+                crosshairX = (crosshairX + swayX).coerceIn(40f, 760f)
+                crosshairY = (crosshairY + swayY).coerceIn(40f, 380f)
+            }
         }
     }
 
@@ -1918,13 +4135,22 @@ fun DeadShotArenaScreen(viewModel: DeadShotViewModel) {
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .pointerInput(Unit) {
+            .pointerInput(selectedWeather, isSkillActive, equippedActiveSkill, sensitivityVal) {
                 detectDragGestures(
                     onDrag = { change, dragAmount ->
                         change.consume()
-                        // Move aiming crosshair offset smoothly inside valid dimensions
-                        crosshairX = (crosshairX + dragAmount.x).coerceIn(40f, 760f)
-                        crosshairY = (crosshairY + dragAmount.y).coerceIn(40f, 380f)
+                        
+                        // Dynamic physics-based control speed (Kelly/Alok skills speeds up, Monsoon Rain slows down)
+                        val multiplier = when {
+                            equippedActiveSkill == "Deadly Velocity" && isSkillActive -> 1.50f  // +50% sprint boost speed
+                            equippedActiveSkill == "Drop the Beat" && isSkillActive -> 1.25f // +25% tempo boost speed
+                            selectedWeather == WeatherType.MONSOON -> 0.70f          // -30% rain drag sluggishness
+                            else -> 1.0f
+                        }
+                        val finalSpeed = sensitivityVal * multiplier
+                        // Move aiming crosshair offset smoothly inside valid dimensions with customizable sensitivity
+                        crosshairX = (crosshairX + dragAmount.x * finalSpeed).coerceIn(40f, 760f)
+                        crosshairY = (crosshairY + dragAmount.y * finalSpeed).coerceIn(40f, 380f)
                     }
                 )
             }
@@ -2076,6 +4302,27 @@ fun DeadShotArenaScreen(viewModel: DeadShotViewModel) {
                             center = Offset(centerX, centerY)
                         )
 
+                        // Moco's Hacker Eye scanning hud indicator
+                        if (mocoTaggedTargetId == target.id) {
+                            val pulseMoco = 1.0f + 0.15f * sin(simulationFrame.value * 0.2f)
+                            drawCircle(
+                                color = Color(0xFFFF5722).copy(alpha = 0.5f), // Neon orange tag glow
+                                radius = (target.size / 2 + 12f) * pulseMoco,
+                                center = Offset(centerX, centerY),
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f)
+                            )
+                            val len = 10f
+                            val offsetDist = (target.size / 2) + 8f
+                            drawLine(Color(0xFFFF3333), Offset(centerX - offsetDist, centerY - offsetDist), Offset(centerX - offsetDist + len, centerY - offsetDist), 2f)
+                            drawLine(Color(0xFFFF3333), Offset(centerX - offsetDist, centerY - offsetDist), Offset(centerX - offsetDist, centerY - offsetDist + len), 2f)
+                            drawLine(Color(0xFFFF3333), Offset(centerX + offsetDist, centerY - offsetDist), Offset(centerX + offsetDist - len, centerY - offsetDist), 2f)
+                            drawLine(Color(0xFFFF3333), Offset(centerX + offsetDist, centerY - offsetDist), Offset(centerX + offsetDist, centerY - offsetDist + len), 2f)
+                            drawLine(Color(0xFFFF3333), Offset(centerX - offsetDist, centerY + offsetDist), Offset(centerX - offsetDist + len, centerY + offsetDist), 2f)
+                            drawLine(Color(0xFFFF3333), Offset(centerX - offsetDist, centerY + offsetDist), Offset(centerX - offsetDist, centerY + offsetDist - len), 2f)
+                            drawLine(Color(0xFFFF3333), Offset(centerX + offsetDist, centerY + offsetDist), Offset(centerX + offsetDist - len, centerY + offsetDist), 2f)
+                            drawLine(Color(0xFFFF3333), Offset(centerX + offsetDist, centerY + offsetDist), Offset(centerX + offsetDist, centerY + offsetDist - len), 2f)
+                        }
+
                         // Draw Target hitpoint cracking patterns dynamically matching residual hp percentage!
                         if (target.hp < target.maxHp) {
                             val crackProgress = 1f - (target.hp.toFloat() / target.maxHp.toFloat())
@@ -2148,6 +4395,318 @@ fun DeadShotArenaScreen(viewModel: DeadShotViewModel) {
                     )
                 }
 
+                // GARENA FREE FIRE GOLDEN MUSHROOM (🍄 LEVEL 4) DEFINITION
+                if (isMushroomVisible) {
+                    val scaleMX = mushroomX / 800f * w
+                    val scaleMY = (mushroomY / 450f * h).coerceAtLeast(h * 0.5f)
+                    
+                    // Golden ground indicator glow
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(Color(0xFFFFA000).copy(alpha = 0.5f), Color.Transparent),
+                            center = Offset(scaleMX, scaleMY),
+                            radius = 32f
+                        ),
+                        radius = 32f,
+                        center = Offset(scaleMX, scaleMY)
+                    )
+                    
+                    // Mushroom stem (White vertical rectangle)
+                    drawRect(
+                        color = Color.White,
+                        topLeft = Offset(scaleMX - 5f, scaleMY - 10f),
+                        size = Size(10f, 20f)
+                    )
+                    
+                    // Mushroom cap (Golden/Orange semi-circle)
+                    drawArc(
+                        color = Color(0xFFFFB300),
+                        startAngle = 180f,
+                        sweepAngle = 180f,
+                        useCenter = true,
+                        topLeft = Offset(scaleMX - 20f, scaleMY - 22f),
+                        size = Size(40f, 24f)
+                    )
+
+                    // Draw spots on mushroom cap
+                    drawCircle(Color.White, radius = 3f, center = Offset(scaleMX - 8f, scaleMY - 16f))
+                    drawCircle(Color.White, radius = 2.5f, center = Offset(scaleMX + 8f, scaleMY - 14f))
+                    drawCircle(Color.White, radius = 3f, center = Offset(scaleMX, scaleMY - 20f))
+                }
+
+                // GARENA FREE FIRE SUPPLY AIRDROP (📦 WITH YELLOW LASER SKY indicator BEACON)
+                if (isAirDropInbound || isAirDropLanded) {
+                    val scaleADX = airDropX / 800f * w
+                    val scaleADY = airDropY / 450f * h
+                    
+                    if (isAirDropLanded) {
+                        // Cargo drops resting on the ground
+                        
+                        // Yellow sky laser light column (signature extreme high visibility marker)
+                        if (!isAirDropLooted) {
+                            val laserPulse = 0.45f + 0.2f * sin(simulationFrame.value * 0.15f)
+                            drawRect(
+                                brush = Brush.horizontalGradient(
+                                    colors = listOf(Color.Transparent, Color(0xFFFFD54F).copy(alpha = laserPulse), Color.Transparent)
+                                ),
+                                topLeft = Offset(scaleADX - 16f, 0f),
+                                size = Size(32f, scaleADY)
+                            )
+                        }
+                        
+                        if (!isAirDropLooted) {
+                            // Red steel supply container container
+                            drawRect(
+                                color = Color(0xFFC62828),
+                                topLeft = Offset(scaleADX - 22f, scaleADY - 18f),
+                                size = Size(44f, 32f)
+                            )
+                            // Blue supply protective tarp top
+                            drawRect(
+                                color = Color(0xFF1565C0),
+                                topLeft = Offset(scaleADX - 25f, scaleADY - 23f),
+                                size = Size(50f, 10f)
+                            )
+                            // Beacon gold core glow
+                            drawCircle(
+                                color = Color(0xFFFFD54F).copy(alpha = 0.3f),
+                                radius = 35f,
+                                center = Offset(scaleADX, scaleADY),
+                                style = Stroke(width = 1.5f)
+                            )
+                        } else {
+                            // Draw looted grey target
+                            drawRect(
+                                color = Color.Gray.copy(alpha = 0.4f),
+                                topLeft = Offset(scaleADX - 22f, scaleADY - 18f),
+                                size = Size(44f, 32f)
+                            )
+                            drawRect(
+                                color = Color.DarkGray.copy(alpha = 0.5f),
+                                topLeft = Offset(scaleADX - 25f, scaleADY - 23f),
+                                size = Size(50f, 10f)
+                            )
+                        }
+                    } else if (isAirDropInbound) {
+                        // Parachute cargo descending from skies
+                        
+                        // Red box
+                        drawRect(
+                            color = Color(0xFFC62828),
+                            topLeft = Offset(scaleADX - 14f, scaleADY - 10f),
+                            size = Size(28f, 20f)
+                        )
+                        drawRect(
+                            color = Color(0xFF1565C0),
+                            topLeft = Offset(scaleADX - 16f, scaleADY - 15f),
+                            size = Size(32f, 6f)
+                        )
+                        
+                        // Straps
+                        drawLine(Color(0xFF424242), Offset(scaleADX - 10f, scaleADY - 15f), Offset(scaleADX - 20f, scaleADY - 38f), strokeWidth = 2f)
+                        drawLine(Color(0xFF424242), Offset(scaleADX + 10f, scaleADY - 15f), Offset(scaleADX + 20f, scaleADY - 38f), strokeWidth = 2f)
+                        
+                        // Parachute canopy dome
+                        drawArc(
+                            color = Color.Black.copy(alpha = 0.85f),
+                            startAngle = 180f,
+                            sweepAngle = 180f,
+                            useCenter = true,
+                            topLeft = Offset(scaleADX - 26f, scaleADY - 55f),
+                            size = Size(52f, 32f)
+                        )
+                    }
+                }
+
+                // FREE FIRE GLOO WALL (ENERGY FREEZING ICE SHIELD BARRIER)
+                if (glooWallScale.value > 0f) {
+                    val scaleFactor = glooWallScale.value
+                    val wallPulse = (0.70f + 0.18f * sin(simulationFrame.value * 0.15f)) * scaleFactor
+                    
+                    // 4K Ultra Curved Garena Ice Crest Shield Path centered on (glooWallX, glooWallY)
+                    val baseW = 160f * scaleFactor
+                    val baseH = 90f * scaleFactor
+                    
+                    val leftX = glooWallX - baseW / 2
+                    val rightX = glooWallX + baseW / 2
+                    val topY = glooWallY - baseH / 2
+                    val bottomY = glooWallY + baseH / 2
+                    
+                    // Outer high-fidelity drop glow aura
+                    drawCircle(
+                        color = Color(0xFF00E5FF).copy(alpha = 0.22f * wallPulse),
+                        radius = 95f * scaleFactor,
+                        center = Offset(glooWallX, glooWallY)
+                    )
+                    
+                    // Curved geometric ice crest segment Path
+                    val crestPath = Path().apply {
+                        moveTo(leftX, bottomY - 10f * scaleFactor)
+                        quadraticTo(glooWallX, bottomY + 15f * scaleFactor, rightX, bottomY - 10f * scaleFactor)
+                        lineTo(rightX + 10f * scaleFactor, topY + 15f * scaleFactor)
+                        quadraticTo(glooWallX, topY - 15f * scaleFactor, leftX - 10f * scaleFactor, topY + 15f * scaleFactor)
+                        close()
+                    }
+                    
+                    // 1. Fill 3D Glacier crystal plates with premium shiny metallic gradients
+                    drawPath(
+                        path = crestPath,
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                Color(0xFFE0F7FA).copy(alpha = 0.85f * scaleFactor),
+                                Color(0xFF4DD0E1).copy(alpha = 0.75f * wallPulse),
+                                Color(0xFF00ACC1).copy(alpha = 0.85f * scaleFactor),
+                                Color(0xFF006064).copy(alpha = 0.95f * scaleFactor)
+                            )
+                        )
+                    )
+                    
+                    // 2. High-Tech neon edge contour lines
+                    drawPath(
+                        path = crestPath,
+                        color = Color(0xFF00F0FF).copy(alpha = wallPulse),
+                        style = Stroke(width = 3.5f * scaleFactor)
+                    )
+                    
+                    // 3. Cyber grid lines mirroring digital cellular hexagonal structure
+                    val linesCount = 6
+                    for (i in 1..linesCount) {
+                        val fraction = i.toFloat() / (linesCount + 1)
+                        val currX = leftX + baseW * fraction
+                        drawLine(
+                            color = Color(0xFFB2EBF2).copy(alpha = 0.35f * scaleFactor),
+                            start = Offset(currX, topY + 10f * scaleFactor),
+                            end = Offset(currX, bottomY),
+                            strokeWidth = 1.5f * scaleFactor
+                        )
+                        // Diagonal crossing
+                        drawLine(
+                            color = Color(0xFFB2EBF2).copy(alpha = 0.20f * scaleFactor),
+                            start = Offset(leftX, topY + (baseH * fraction)),
+                            end = Offset(rightX, bottomY - (baseH * fraction)),
+                            strokeWidth = 1f * scaleFactor
+                        )
+                    }
+                    
+                    // 4. Procedural cracking/fracture lines depending dynamically on Gloo Wall remaining HP
+                    val damageRatio = (150f - glooWallHp) / 150f
+                    if (damageRatio > 0.05f) {
+                        val crackColor = Color(0xFFFF5252).copy(alpha = 0.85f)
+                        val sparkPulse = (0.8f + 0.2f * sin(simulationFrame.value * 0.3f)) * scaleFactor
+                        // Crack branching
+                        val branches = (1 + (damageRatio * 8).toInt()).coerceAtMost(8)
+                        for (b in 0 until branches) {
+                            val angle = b * (360f / branches) + (simulationFrame.value * 0.1f)
+                            val rad = Math.toRadians(angle.toDouble())
+                            val length = 60f * damageRatio * scaleFactor
+                            val targetX = glooWallX + (length * cos(rad) * sparkPulse).toFloat()
+                            val targetY = glooWallY + (length * sin(rad) * sparkPulse).toFloat()
+                            drawLine(
+                                color = crackColor,
+                                start = Offset(glooWallX, glooWallY),
+                                end = Offset(targetX, targetY),
+                                strokeWidth = 3f * damageRatio * scaleFactor
+                            )
+                            // Sub-branches
+                            if (damageRatio > 0.4f) {
+                                val subRad = Math.toRadians((angle + 35f).toDouble())
+                                val subLength = 30f * damageRatio * scaleFactor
+                                drawLine(
+                                    color = Color(0xFFFF8A80).copy(alpha = 0.9f),
+                                    start = Offset((glooWallX + length * 0.5f * cos(rad)).toFloat(), (glooWallY + length * 0.5f * sin(rad)).toFloat()),
+                                    end = Offset((glooWallX + length * 0.5f * cos(rad) + subLength * cos(subRad)).toFloat(), (glooWallY + length * 0.5f * sin(rad) + subLength * sin(subRad)).toFloat()),
+                                    strokeWidth = 1.5f * damageRatio * scaleFactor
+                                )
+                            }
+                        }
+                    }
+                    
+                    // 5. Drawing 10s Circular Hologram Timer Dial above the shield
+                    val dialCenter = Offset(glooWallX, glooWallY - 72f * scaleFactor)
+                    val dialRadius = 24f * scaleFactor
+                    
+                    // Dial frame base background
+                    drawCircle(
+                        color = Color.Black.copy(alpha = 0.75f * scaleFactor),
+                        radius = dialRadius,
+                        center = dialCenter
+                    )
+                    drawCircle(
+                        color = Color(0xFF00E5FF).copy(alpha = 0.2f * scaleFactor),
+                        radius = dialRadius,
+                        center = dialCenter,
+                        style = Stroke(width = 3.5f * scaleFactor)
+                    )
+                    
+                    // Neon Cyan remaining seconds arc loader
+                    val sweepProgress = (glooWallSecondsLeft.toFloat() / 10f) * 360f
+                    drawArc(
+                        color = if (glooWallSecondsLeft > 3) Color(0xFF00FFCC).copy(alpha = scaleFactor) else Color(0xFFFF3D00).copy(alpha = scaleFactor),
+                        startAngle = -90f,
+                        sweepAngle = sweepProgress,
+                        useCenter = false,
+                        topLeft = Offset(dialCenter.x - dialRadius, dialCenter.y - dialRadius),
+                        size = Size(dialRadius * 2, dialRadius * 2),
+                        style = Stroke(width = 3.5f * scaleFactor)
+                    )
+                    
+                    // Crisp 4K digital seconds count text inside dial
+                    if (scaleFactor > 0.3f) {
+                        drawContext.canvas.nativeCanvas.drawText(
+                            "${glooWallSecondsLeft}s",
+                            glooWallX,
+                            glooWallY - 65f * scaleFactor,
+                            android.graphics.Paint().apply {
+                                color = android.graphics.Color.WHITE
+                                textSize = 21f * scaleFactor
+                                typeface = android.graphics.Typeface.MONOSPACE
+                                textAlign = android.graphics.Paint.Align.CENTER
+                                isFakeBoldText = true
+                            }
+                        )
+                    }
+                    
+                    // 6. Cybernetic durability linear health progress bar
+                    val barW = 110f * scaleFactor
+                    val barH = 5f * scaleFactor
+                    val barLeft = glooWallX - barW / 2
+                    val barTop = glooWallY - 104f * scaleFactor
+                    
+                    // Durability text marker
+                    if (scaleFactor > 0.4f) {
+                        drawContext.canvas.nativeCanvas.drawText(
+                            "ICE COVER HP: $glooWallHp/150",
+                            glooWallX,
+                            glooWallY - 114f * scaleFactor,
+                            android.graphics.Paint().apply {
+                                color = android.graphics.Color.GREEN
+                                textSize = 14f * scaleFactor
+                                typeface = android.graphics.Typeface.MONOSPACE
+                                textAlign = android.graphics.Paint.Align.CENTER
+                            }
+                        )
+                    }
+                    
+                    // Bar Border Backdrop
+                    drawRect(
+                        color = Color.Black.copy(alpha = 0.65f * scaleFactor),
+                        topLeft = Offset(barLeft - 2f * scaleFactor, barTop - 2f * scaleFactor),
+                        size = Size(barW + 4f * scaleFactor, barH + 4f * scaleFactor)
+                    )
+                    // Bar Fill progress ratio
+                    val hpFrac = (glooWallHp.toFloat() / 150f).coerceIn(0f, 1f)
+                    val barColor = when {
+                        hpFrac > 0.5f -> Color(0xFF00FFCC).copy(alpha = scaleFactor)
+                        hpFrac > 0.25f -> Color(0xFFFFEB3B).copy(alpha = scaleFactor)
+                        else -> Color(0xFFFF3D00).copy(alpha = scaleFactor)
+                    }
+                    drawRect(
+                        color = barColor,
+                        topLeft = Offset(barLeft, barTop),
+                        size = Size(barW * hpFrac, barH)
+                    )
+                }
+
                 // WEATHER SHADER EMITTER PARTICLES (RAIN, SANDSTORMS)
                 when (selectedWeather) {
                     WeatherType.SUNNY -> {
@@ -2194,6 +4753,55 @@ fun DeadShotArenaScreen(viewModel: DeadShotViewModel) {
                                 color = Color(0xFFCD853F).copy(alpha = 0.12f),
                                 radius = dustSize,
                                 center = Offset(dustX, dustY)
+                            )
+                        }
+                    }
+                }
+
+                // CHARACTER ACTIVE OVERLAY EFFECTS
+                if (isSkillActive) {
+                    when (equippedCharacter) {
+                        "DJ Alok" -> {
+                            val waveCount = 3
+                            for (i in 0 until waveCount) {
+                                val phase = (simulationFrame.value * 2f + i * 40f) % 120f
+                                drawCircle(
+                                    color = Color(0xFF00E5FF).copy(alpha = (1f - phase / 120f) * 0.4f),
+                                    radius = 100f + phase * 2.5f,
+                                    center = Offset(w * 0.5f, h * 0.8f),
+                                    style = Stroke(width = 3f)
+                                )
+                            }
+                            drawCircle(
+                                color = Color(0xFF00E5FF).copy(alpha = 0.15f),
+                                radius = 280f,
+                                center = Offset(w * 0.5f, h * 0.8f)
+                            )
+                        }
+                        "Chrono" -> {
+                            drawCircle(
+                                color = Color(0xFF1A237E).copy(alpha = 0.25f),
+                                radius = 230f,
+                                center = Offset(w * 0.5f, h * 0.65f)
+                            )
+                            drawCircle(
+                                color = Color(0xFF2979FF).copy(alpha = 0.55f),
+                                radius = 230f,
+                                center = Offset(w * 0.5f, h * 0.65f),
+                                style = Stroke(width = 4f)
+                            )
+                            drawCircle(
+                                color = Color(0xFF2979FF).copy(alpha = 0.25f),
+                                radius = 238f + sin(simulationFrame.value * 0.15f) * 6f,
+                                center = Offset(w * 0.5f, h * 0.65f),
+                                style = Stroke(width = 1.5f)
+                            )
+                        }
+                        "Kelly" -> {
+                            val pulseAlpha = (sin(simulationFrame.value * 0.25f) + 1f) / 2f * 0.35f
+                            drawRect(
+                                color = Color(0xFFFF5252).copy(alpha = pulseAlpha),
+                                style = Stroke(width = 24f)
                             )
                         }
                     }
@@ -2352,17 +4960,39 @@ fun DeadShotArenaScreen(viewModel: DeadShotViewModel) {
                         }
                     }
 
-                    // MUZZLE COMPRESSION BLAST EXHAUST FLASHLIGHT ON ACTIVE SHOOTING
+                    // MUZZLE COMPRESSION BLAST EXHAUST FLASHLIGHT ON ACTIVE SHOOTING (CUSTOM MULTIPLAYER SKIN COLORS!)
                     if (isFiring) {
                         val blastPulse = Random.nextFloat() * 25f + 35f
+                        val wpKey = when (selectedWeapon) {
+                            WeaponType.M4A1 -> "M4A1"
+                            WeaponType.AWP -> "AWP"
+                            WeaponType.DEAGLE -> "DEAGLE"
+                        }
+                        val equippedSkin = equippedWeaponSkinsByWp[wpKey] ?: "Classic Slate"
+
+                        val (primaryColor, secondaryColor) = when {
+                            equippedSkin.contains("Viper") -> Color(0xFF39FF14) to Color(0xFF00E5FF) // Toxic Neon Green/Cyan
+                            equippedSkin.contains("Drake") -> Color(0xFFFF1744) to Color(0xFFFF9100) // Flame Red/Orange Dragon
+                            equippedSkin.contains("Shahi") -> Color(0xFFFFD700) to Color(0xFFFF8C00) // Lahore Luxury Imperial Gold
+                            else -> Color(0xFFFFFFB3) to Color(0xFFFFCC00) // Standard bullet yellow
+                        }
+
                         drawCircle(
                             brush = Brush.radialGradient(
-                                listOf(Color(0xFFFFFFB3), Color(0xFFFFCC00).copy(alpha = 0.6f), Color.Transparent),
+                                listOf(primaryColor, secondaryColor.copy(alpha = 0.60f), Color.Transparent),
                                 center = Offset(originX - 140f, originY - 80f),
                                 radius = blastPulse
                             ),
                             radius = blastPulse,
                             center = Offset(originX - 140f, originY - 80f)
+                        )
+
+                        // Draw a high fidelity tracer beam line from barrel center direct to crosshair
+                        drawLine(
+                            color = primaryColor.copy(alpha = 0.70f),
+                            start = Offset(originX - 140f, originY - 80f),
+                            end = Offset(crosshairX, crosshairY),
+                            strokeWidth = 3f
                         )
                     }
                 }
@@ -2394,8 +5024,8 @@ fun DeadShotArenaScreen(viewModel: DeadShotViewModel) {
                 drawLine(markerColor, Offset(crosshairX, crosshairY - crossSize), Offset(crosshairX, crosshairY - 4f), strokeWidth = strokeThickness)
                 drawLine(markerColor, Offset(crosshairX, crosshairY + 4f), Offset(crosshairX, crosshairY + crossSize), strokeWidth = strokeThickness)
 
-                // Precise tiny center dot
-                drawCircle(Color.Red, radius = 1.5f, center = Offset(crosshairX, crosshairY))
+                // Precise tiny center dot scaled with settings redDotSizeVal
+                drawCircle(Color.Red, radius = redDotSizeVal / 6f, center = Offset(crosshairX, crosshairY))
             }
         }
 
@@ -2451,6 +5081,30 @@ fun DeadShotArenaScreen(viewModel: DeadShotViewModel) {
                     }
                 }
 
+                // BATTLE ROYALE SIMULATION REMAINING ALIVE & KILLS WIDGET
+                Surface(
+                    color = Color.Black.copy(alpha = 0.75f),
+                    shape = RoundedCornerShape(6.dp),
+                    border = BorderStroke(1.dp, Color(0xFFFF5722)),
+                    modifier = Modifier.testTag("br_survivors_hud")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("👤 ALIVE ", color = Color(0xFFFFCC00), fontSize = 9.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("$survivorsCount", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
+                        }
+                        Box(modifier = Modifier.width(1.dp).height(12.dp).background(Color.White.copy(alpha = 0.2f)))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("💀 KILLS ", color = Color(0xFFFF3333), fontSize = 9.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("$arenaKills", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black, fontFamily = FontFamily.Monospace)
+                        }
+                    }
+                }
+
                 // CENTRAL FEEDBACK DIALOG
                 Box(
                     modifier = Modifier
@@ -2497,6 +5151,85 @@ fun DeadShotArenaScreen(viewModel: DeadShotViewModel) {
 
             Spacer(modifier = Modifier.weight(1f))
 
+            // GARENA FREE FIRE HP AND EP HUD BARS
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    modifier = Modifier
+                        .width(260.dp)
+                        .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    // EP Bar (Yellow)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "EP  $playerEp / 100",
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = Color(0xFFFFB300)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 8.dp)
+                                .height(5.dp)
+                                .background(Color(0xFF333333), RoundedCornerShape(2.5.dp))
+                        ) {
+                            val epPct = (playerEp / 100f).coerceIn(0f, 1f)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .fillMaxWidth(epPct)
+                                    .background(Color(0xFFFFD54F), RoundedCornerShape(2.5.dp))
+                            )
+                        }
+                    }
+
+                    // HP Bar (Light-blue / White)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "HP  $playerHp / 200",
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = Color(0xFF00E5FF)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 8.dp)
+                                .height(8.dp)
+                                .background(Color(0xFF333333), RoundedCornerShape(4.dp))
+                        ) {
+                            val hpPct = (playerHp / 200f).coerceIn(0f, 1f)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .fillMaxWidth(hpPct)
+                                    .background(
+                                        if (playerHp < 60) Color(0xFFD32F2F) else Color(0xFF00E5FF), 
+                                        RoundedCornerShape(4.dp)
+                                    )
+                            )
+                        }
+                    }
+                }
+            }
+
             // COMBAT IN-MATCH CONTROL ACTIONS (COMBAT SLIDER FOOTER RADIAL)
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -2508,6 +5241,193 @@ fun DeadShotArenaScreen(viewModel: DeadShotViewModel) {
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.Bottom
                 ) {
+                    // TACTICAL JOYSTICK COMPONENT (SCALES DYNAMICALLY VIA SETTINGS HUD SLIDERS)
+                    Box(
+                        modifier = Modifier
+                            .size((52 * joystickScaleVal).dp)
+                            .background(Color.Black.copy(alpha = 0.8f), CircleShape)
+                            .border(1.5.dp, DeadShotTheme.LaserGreen.copy(alpha = 0.5f), CircleShape)
+                            .testTag("joystick_pad_move"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size((24 * joystickScaleVal).dp)
+                                .background(DeadShotTheme.LaserGreen.copy(alpha = 0.8f), CircleShape)
+                                .border(1.dp, Color.White.copy(alpha = 0.4f), CircleShape)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    // ACTIVE CHARACTER SKILL TRIGGER BUTTON (FREE FIRE STYLE HERO POWER)
+                    Button(
+                        onClick = {
+                            val statusMsg = viewModel.triggerCharacterSkill()
+                            if (statusMsg.isNotEmpty()) {
+                                combatFeedbackMessage = statusMsg
+                                coroutineScope.launch {
+                                    delay(2400)
+                                    if (combatFeedbackMessage == statusMsg) {
+                                        combatFeedbackMessage = ""
+                                    }
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isSkillActive) DeadShotTheme.GoldAccent else Color.Black.copy(alpha = 0.80f),
+                            disabledContainerColor = Color(0xFF1F1F1F)
+                        ),
+                        border = BorderStroke(1.5.dp, if (skillCooldown > 0) Color.DarkGray else DeadShotTheme.GoldAccent),
+                        shape = CircleShape,
+                        enabled = skillCooldown == 0,
+                        modifier = Modifier
+                            .size(52.dp)
+                            .testTag("btn_character_skill_active")
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = when (equippedActiveSkill) {
+                                    "Drop the Beat" -> "🎵"
+                                    "Time Turner" -> "🛡️"
+                                    "Deadly Velocity" -> "⚡"
+                                    "Master of All" -> "☸️"
+                                    else -> "⭐"
+                                },
+                                fontSize = 15.sp
+                            )
+                            Spacer(modifier = Modifier.height(1.dp))
+                            Text(
+                                text = if (skillCooldown > 0) "${skillCooldown}s" else if (isSkillActive) "ON" else "SKILL",
+                                fontSize = 6.sp,
+                                fontWeight = FontWeight.Black,
+                                color = if (skillCooldown > 0) Color.Gray else Color.White
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    // GARENA FREE FIRE GLOO WALL DEPLOY BUTTON
+                    Button(
+                        onClick = {
+                            val deployed = viewModel.deployGlooWall(crosshairX, crosshairY)
+                            if (deployed) {
+                                val statusMsg = "🛡️ FREEZING GLIP SHIELD DEPLOYED! INCOMING RIVAL IMPACT BLOCKED!"
+                                combatFeedbackMessage = statusMsg
+                                coroutineScope.launch {
+                                    delay(2000)
+                                    if (combatFeedbackMessage == statusMsg) {
+                                        combatFeedbackMessage = ""
+                                    }
+                                }
+                            } else if (glooWallCount == 0) {
+                                val statusMsg = "❌ OUT OF GLOO STORES! WAIT FOR SUPPLY AIRDROP LOOT!"
+                                combatFeedbackMessage = statusMsg
+                                coroutineScope.launch {
+                                    delay(2000)
+                                    if (combatFeedbackMessage == statusMsg) {
+                                        combatFeedbackMessage = ""
+                                    }
+                                }
+                            } else if (isGlooWallDeployed) {
+                                val statusMsg = "⚠️ GLOO WALL ALREADY ENGAGED IN THE SECTOR!"
+                                combatFeedbackMessage = statusMsg
+                                coroutineScope.launch {
+                                    delay(2000)
+                                    if (combatFeedbackMessage == statusMsg) {
+                                        combatFeedbackMessage = ""
+                                    }
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isGlooWallDeployed) Color(0xFF00E5FF).copy(alpha = 0.85f) else Color.Black.copy(alpha = 0.85f)
+                        ),
+                        border = BorderStroke(1.5.dp, Color(0xFF00E5FF)),
+                        shape = CircleShape,
+                        modifier = Modifier
+                            .size(52.dp)
+                            .testTag("btn_gloo_wall_deploy")
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "❄️",
+                                fontSize = 15.sp
+                            )
+                            Spacer(modifier = Modifier.height(1.dp))
+                            Text(
+                                text = "GLOO ($glooWallCount)",
+                                fontSize = 6.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isGlooWallDeployed) Color.Black else Color.White
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    // GARENA FREE FIRE MEDKIT BUTTON
+                    Button(
+                        onClick = {
+                            if (playerHp >= 200) {
+                                val statusMsg = "⚠️ HP IS ALREADY MAX - MEDKIT NOT REQUIRED!"
+                                combatFeedbackMessage = statusMsg
+                                coroutineScope.launch {
+                                    delay(2000)
+                                    if (combatFeedbackMessage == statusMsg) {
+                                        combatFeedbackMessage = ""
+                                    }
+                                }
+                            } else {
+                                val used = viewModel.useMedkit()
+                                if (!used && medkitCount == 0) {
+                                    val statusMsg = "❌ OUT OF MEDKITS! SCAN THE AREA FOR SUPPLY CRATES!"
+                                    combatFeedbackMessage = statusMsg
+                                    coroutineScope.launch {
+                                        delay(2000)
+                                        if (combatFeedbackMessage == statusMsg) {
+                                            combatFeedbackMessage = ""
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isChannelingHeal) Color(0xFF4CAF50).copy(alpha = 0.85f) else Color.Black.copy(alpha = 0.85f)
+                        ),
+                        border = BorderStroke(1.5.dp, Color(0xFF4CAF50)),
+                        shape = CircleShape,
+                        modifier = Modifier
+                            .size(52.dp)
+                            .testTag("btn_medkit_heal")
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "🩹",
+                                fontSize = 15.sp
+                            )
+                            Spacer(modifier = Modifier.height(1.dp))
+                            Text(
+                                text = "KIT ($medkitCount)",
+                                fontSize = 6.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isChannelingHeal) Color.Black else Color.White
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
                     // CAMERA ANGLE CYCLE TOGGLER
                     Button(
                         onClick = { viewModel.toggleCameraAngle() },
@@ -2618,7 +5538,7 @@ fun DeadShotArenaScreen(viewModel: DeadShotViewModel) {
                     colors = ButtonDefaults.buttonColors(containerColor = DeadShotTheme.TacticalRed),
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier
-                        .size(64.dp)
+                        .size((64 * fireButtonScaleVal).dp)
                         .shadow(elevation = 12.dp, spotColor = DeadShotTheme.TacticalRed, ambientColor = DeadShotTheme.TacticalRed)
                         .testTag("btn_fire_gun")
                 ) {
@@ -2628,6 +5548,186 @@ fun DeadShotArenaScreen(viewModel: DeadShotViewModel) {
                             fontWeight = FontWeight.Black,
                             fontSize = 11.sp,
                             color = Color.White
+                        )
+                    }
+                }
+            }
+        }
+
+        // AUTOMATED BATTLE ROYALE MULTIPLAYER MATCHEMAKER LIVE ACTION KILL FEED
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .offset(x = 16.dp, y = (-20).dp)
+                .width(170.dp)
+                .height(95.dp)
+                .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(6.dp))
+                .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
+                .padding(6.dp)
+        ) {
+            Column {
+                Text(
+                    text = "⚔️ BATTLEGROUND ACTION FEED",
+                    color = DeadShotTheme.GoldAccent,
+                    fontSize = 7.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.padding(bottom = 3.dp)
+                )
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(battleLogFeed.takeLast(4).reversed()) { log ->
+                        val isMe = log.contains(profileName) || log.contains("YOU")
+                        Text(
+                            text = log,
+                            color = if (isMe) Color(0xFFFF5722) else Color.White.copy(alpha = 0.85f),
+                            fontSize = 7.sp,
+                            maxLines = 1,
+                            fontWeight = if (isMe) FontWeight.Bold else FontWeight.Normal,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.padding(vertical = 1.5.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        // GARENA FREE FIRE MEDKIT HEAL CHANNELING PROGRESS BAR
+        if (isChannelingHeal) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .wrapContentSize(Alignment.Center)
+                    .offset(y = 120.dp) // display below the crosshair
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "🩹 APPLYING MEDKIT TREATMENT...",
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF4CAF50),
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 1.sp
+                    )
+                    
+                    // Progress Bar container
+                    Box(
+                        modifier = Modifier
+                            .width(150.dp)
+                            .height(6.dp)
+                            .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(3.dp))
+                            .border(0.5.dp, Color(0xFF4CAF50), RoundedCornerShape(3.dp))
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .fillMaxWidth(healProgress)
+                                .background(Color(0xFF4CAF50), RoundedCornerShape(3.dp))
+                        )
+                    }
+                }
+            }
+        }
+
+        // SPECTACULAR FLASHING BOOYAH! VICTORY SCREEN OVERLAY
+        if (isBooyahActive) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.92f))
+                    .pointerInput(Unit) {}, // block touch leak events
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth(0.85f)
+                        .background(Color(0xFF1E1E1E), RoundedCornerShape(16.dp))
+                        .border(3.dp, DeadShotTheme.GoldAccent, RoundedCornerShape(16.dp))
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "🏆",
+                        fontSize = 54.sp,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+
+                    Text(
+                        text = "CHEES!",
+                        fontSize = 46.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.SansSerif,
+                        color = DeadShotTheme.GoldAccent,
+                        letterSpacing = 4.sp,
+                        modifier = Modifier.testTag("booyah_victory_title")
+                    )
+
+                    Text(
+                        text = "BATTLEGROUND CHAMPION #1",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        color = Color.White,
+                        modifier = Modifier.padding(top = 2.dp, bottom = 16.dp)
+                    )
+
+                    Text(
+                        text = "You successfully defended the frontier, cleared the Karachi Port sector, and neutralized all opponent hostiles!",
+                        fontSize = 9.5.sp,
+                        color = Color.LightGray,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(bottom = 24.dp)
+                    )
+
+                    // Historic stats breakdown cards
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.Black.copy(alpha = 0.50f), RoundedCornerShape(8.dp))
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("TOTAL KILLS", fontSize = 8.sp, color = Color.Gray, fontFamily = FontFamily.Monospace)
+                            Text("$arenaKills", fontSize = 16.sp, fontWeight = FontWeight.Black, color = Color.White, fontFamily = FontFamily.Monospace)
+                        }
+                        Box(modifier = Modifier.width(1.dp).height(24.dp).background(Color.White.copy(alpha = 0.15f)))
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("ACCURACY CORE", fontSize = 8.sp, color = Color.Gray, fontFamily = FontFamily.Monospace)
+                            Text("${(100f * (score.toFloat().coerceAtLeast(1f) / (score.toFloat() + 50f))).toInt()}%", fontSize = 16.sp, fontWeight = FontWeight.Black, color = Color(0xFF00E5FF), fontFamily = FontFamily.Monospace)
+                        }
+                        Box(modifier = Modifier.width(1.dp).height(24.dp).background(Color.White.copy(alpha = 0.15f)))
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("DSG COINS", fontSize = 8.sp, color = Color.Gray, fontFamily = FontFamily.Monospace)
+                            Text("+1,000 DSG", fontSize = 16.sp, fontWeight = FontWeight.Black, color = DeadShotTheme.GoldAccent, fontFamily = FontFamily.Monospace)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    Button(
+                        onClick = {
+                            viewModel.navigateTo(ActiveScreen.LOBBY)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = DeadShotTheme.GoldAccent),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("btn_claim_booyah_lobby")
+                    ) {
+                        Text(
+                            text = "CLAIM REWARDS & RETREAT TO LOBBY",
+                            color = Color.Black,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 11.sp,
+                            letterSpacing = 1.sp
                         )
                     }
                 }
